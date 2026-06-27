@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Playlist Offline
+Comment=Phat nhac offline tu thu muc Music
+Exec=/home/kevin/Music/Playlist_app/run_playlist_app.sh
+Icon=multimedia-audio-player
+Terminal=false
+Categories=Audio;AudioVideo;Player;
+StartupNotify=true

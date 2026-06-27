@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>YouTube Cover Art Downloader</title>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-color: #070b13;
+            --card-bg: rgba(13, 19, 32, 0.6);
+            --accent-color: #1d90f4;
+            --text-color: #ffffff;
+            --text-muted: #a0aab8;
+            --success-color: #10b981;
+            --error-color: #ef4444;
+        }
+
+        body {
+            margin: 0;
+            padding: 24px;
+            font-family: 'Outfit', sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            background-image: radial-gradient(circle at top right, rgba(29, 144, 244, 0.1), transparent 400px);
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        h1 {
+            font-weight: 800;
+            font-size: 36px;
+            margin: 0 0 8px 0;
+            background: linear-gradient(135deg, #1d90f4, #00ffcc);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .subtitle {
+            color: var(--text-muted);
+            margin-bottom: 24px;
+            font-size: 16px;
+        }
+
+        .dashboard {
+            display: grid;
+            grid-template-columns: 1.5fr 1fr;
+            gap: 24px;
+            margin-bottom: 24px;
+        }
+
+        .card {
+            background: var(--card-bg);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 16px;
+            padding: 24px;
+            backdrop-filter: blur(12px);
+        }
+
+        .progress-bar-container {
+            height: 14px;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 7px;
+            overflow: hidden;
+            margin: 16px 0;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #1d90f4, #00ffcc);
+            transition: width 0.3s ease;
+        }
+
+        .stats {
+            display: flex;
+            justify-content: space-between;
+            font-size: 14px;
+            color: var(--text-muted);
+        }
+
+        .terminal {
+            font-family: 'JetBrains Mono', monospace;
+            background: #05080f;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            padding: 16px;
+            height: 160px;
+            overflow-y: auto;
+            font-size: 12px;
+            color: #b3c0d1;
+        }
+
+        .terminal-line {
+            margin-bottom: 6px;
+        }
+
+        .terminal-success { color: var(--success-color); }
+        .terminal-error { color: var(--error-color); }
+        .terminal-info { color: var(--accent-color); }
+
+        .btn {
+            background: var(--accent-color);
+            color: white;
+            border: none;
+            padding: 12px 28px;
+            border-radius: 8px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-size: 14px;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+            transform: translateY(-1px);
+        }
+
+        .btn:disabled {
+            background: rgba(255, 255, 255, 0.1);
+            color: var(--text-muted);
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .grid-container {
+            margin-top: 24px;
+        }
+
+        .grid-title {
+            font-weight: 600;
+            font-size: 18px;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 16px;
+            max-height: 480px;
+            overflow-y: auto;
+            padding: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            border-radius: 12px;
+            background: rgba(0, 0, 0, 0.2);
+        }
+
+        .song-card {
+            background: rgba(255, 255, 255, 0.02);
+            border: 1px solid rgba(255, 255, 255, 0.04);
+            border-radius: 10px;
+            padding: 8px;
+            text-align: center;
+            font-size: 11px;
+            transition: all 0.2s;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            height: 140px;
+        }
+
+        .song-card.pending { border-color: rgba(255, 255, 255, 0.08); }
+        .song-card.fetching { border-color: var(--accent-color); background: rgba(29, 144, 244, 0.08); box-shadow: 0 0 10px rgba(29, 144, 244, 0.15); }
+        .song-card.success { border-color: var(--success-color); background: rgba(16, 185, 129, 0.08); }
+        .song-card.error { border-color: var(--error-color); background: rgba(239, 68, 68, 0.08); }
+
+        .song-thumb-wrapper {
+            width: 100%;
+            height: 75px;
+            border-radius: 6px;
+            overflow: hidden;
+            position: relative;
+            background: #111;
+            margin-bottom: 8px;
+        }
+
+        .song-thumb {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .song-status-badge {
+            position: absolute;
+            bottom: 4px;
+            right: 4px;
+            font-size: 9px;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-weight: bold;
+        }
+
+        .song-card.pending .song-status-badge { background: #333; color: #aaa; }
+        .song-card.fetching .song-status-badge { background: var(--accent-color); color: #fff; }
+        .song-card.success .song-status-badge { background: var(--success-color); color: #fff; }
+        .song-card.error .song-status-badge { background: var(--error-color); color: #fff; }
+
+        .song-info {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+
+        .song-title {
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: #fff;
+        }
+
+        .song-artist {
+            color: var(--text-muted);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+    </style>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <h1>YouTube Cover Art Downloader</h1>
+        <div class="subtitle">Fetching and packing cover arts from YouTube Music for offline playlist.</div>
+
+        <div class="dashboard">
+            <div class="card">
+                <h2>Progress Control</h2>
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+                <div class="stats">
+                    <span id="progressText">Completed: 0/0 (0%)</span>
+                    <span id="statusText">Idle</span>
+                </div>
+                <div style="margin-top: 24px; display: flex; gap: 12px;">
+                    <button class="btn" id="startBtn" onclick="startDownload()">Start Fetching</button>
+                    <button class="btn" id="downloadBtn" onclick="saveZip()" disabled style="background: var(--success-color);">Download ZIP</button>
+                </div>
+            </div>
+
+            <div class="card" style="display: flex; flex-direction: column;">
+                <h2>System Logs</h2>
+                <div class="terminal" id="terminal">
+                    <div class="terminal-line terminal-info">System initialized. Ready to fetch.</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="card grid-container">
+            <div class="grid-title">
+                <span>Songs Queue</span>
+                <span id="queueStats" style="font-size: 13px; color: var(--text-muted); font-weight: normal;">Total: 0</span>
+            </div>
+            <div class="grid" id="songGrid"></div>
+        </div>
+    </div>
+
+    <script>
+        const tracks = [{"path": "/home/kevin/Music/Nhac_Viet/14 Casper/'bao tiền một mớ bình yên-' - 14 Casper & Bon Nghiêm (Official) (Track 09 - Album 'SỐ KHÔNG').mp3", "title": "'bao tiền một mớ bình yên-' - 14 Casper & Bon Nghiêm (Official) (Track 09 - Album 'SỐ KHÔNG')", "artist": "Nhac_Viet", "album": "'SỐ KHÔNG')", "query": "Nhac_Viet - 'bao tiền một mớ bình yên-' - 14 Casper & Bon Nghiêm (Official) (Track 09 - Album 'SỐ KHÔNG')"}, {"path": "/home/kevin/Music/Nhac_Viet/AnNgo/Nghe kể năm 90s - Ân ngờ ft. Suzie MK [ EP- Này Hay ].mp3", "title": "Nghe kể năm 90s - Ân ngờ ft. Suzie MK [ EP- Này Hay ]", "artist": "Nhac_Viet", "album": "AnNgo", "query": "Nhac_Viet - Nghe kể năm 90s - Ân ngờ ft. Suzie MK [ EP- Này Hay ]"}, {"path": "/home/kevin/Music/Nhac_Viet/AnNgo/Vườn mây vừa hay - Ân ngờ ft. MYLINA [Official Video].mp3", "title": "Vườn mây vừa hay - Ân ngờ ft. MYLINA [Official Video]", "artist": "Nhac_Viet", "album": "AnNgo", "query": "Nhac_Viet - Vườn mây vừa hay - Ân ngờ ft. MYLINA [Official Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/AnNgo/VƯỜN MÂY VỪA HAYHO -  Ân Ngờ x Hayho (MV Lyrics) -- Thổn thức từ giấc mơ ban chiều.mp3", "title": "VƯỜN MÂY VỪA HAYHO -  Ân Ngờ x Hayho (MV Lyrics) -- Thổn thức từ giấc mơ ban chiều", "artist": "Nhac_Viet", "album": "AnNgo", "query": "Nhac_Viet - VƯỜN MÂY VỪA HAYHO -  Ân Ngờ x Hayho (MV Lyrics) -- Thổn thức từ giấc mơ ban chiều"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Anh Chưa Từng Hết Yêu (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt).mp3", "title": "Anh Chưa Từng Hết Yêu (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Anh Chưa Từng Hết Yêu (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Chân Đất - buitruonglinh x babysam x vine.mp3", "title": "Chân Đất - buitruonglinh x babysam x vine", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Chân Đất - buitruonglinh x babysam x vine"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Chỉ Là Không Có Nhau (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt).mp3", "title": "Chỉ Là Không Có Nhau (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Chỉ Là Không Có Nhau (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Dù Cho Mai Về Sau (Official Music Video) - buitruonglinh.mp3", "title": "Dù Cho Mai Về Sau (Official Music Video) - buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Dù Cho Mai Về Sau (Official Music Video) - buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Dù Em Từng Yêu (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt).mp3", "title": "Dù Em Từng Yêu (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Dù Em Từng Yêu (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Dại (Official Music Video) - buitruonglinh ft Tuyên.mp3", "title": "Dại (Official Music Video) - buitruonglinh ft Tuyên", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Dại (Official Music Video) - buitruonglinh ft Tuyên"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Giờ Thì - buitruonglinh.mp3", "title": "Giờ Thì - buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Giờ Thì - buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Người Đầu Tiên - Juky San feat. buitruonglinh.mp3", "title": "Người Đầu Tiên - Juky San feat. buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Người Đầu Tiên - Juky San feat. buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Nàng Công Chúa Nhỏ (interlude) (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt).mp3", "title": "Nàng Công Chúa Nhỏ (interlude) (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Nàng Công Chúa Nhỏ (interlude) (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Nếu Em Còn Đợi Anh - buitruonglinh.mp3", "title": "Nếu Em Còn Đợi Anh - buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Nếu Em Còn Đợi Anh - buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Sớm Như Vậy - buitruonglinh.mp3", "title": "Sớm Như Vậy - buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Sớm Như Vậy - buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Tại Vì Em - buitruonglinh.mp3", "title": "Tại Vì Em - buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Tại Vì Em - buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Từng Ngày Như Mãi Mãi - buitruonglinh.mp3", "title": "Từng Ngày Như Mãi Mãi - buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Từng Ngày Như Mãi Mãi - buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Từng Ngày Yêu Em (Acoustic) (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt).mp3", "title": "Từng Ngày Yêu Em (Acoustic) (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Từng Ngày Yêu Em (Acoustic) (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Vì Điều Gì (Instrumental) - buitruonglinh (prod. Minsicko).mp3", "title": "Vì Điều Gì (Instrumental) - buitruonglinh (prod. Minsicko)", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Vì Điều Gì (Instrumental) - buitruonglinh (prod. Minsicko)"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Yêu Người Có Ước Mơ - buitruonglinh.mp3", "title": "Yêu Người Có Ước Mơ - buitruonglinh", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Yêu Người Có Ước Mơ - buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Đi Cùng Anh (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt).mp3", "title": "Đi Cùng Anh (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Đi Cùng Anh (Instrumental) - buitruonglinh (prod. Đậu Tất Đạt)"}, {"path": "/home/kevin/Music/Nhac_Viet/BuiTruongLinh/Đường Tôi Chở Em Về - buitruonglinh - Lyrics Video -.mp3", "title": "Đường Tôi Chở Em Về - buitruonglinh - Lyrics Video -", "artist": "Nhac_Viet", "album": "BuiTruongLinh", "query": "Nhac_Viet - Đường Tôi Chở Em Về - buitruonglinh - Lyrics Video -"}, {"path": "/home/kevin/Music/Nhac_Viet/BẠN CÓ TÀI MÀ/Ở Lại - Dick ft Bí Nhe ( Unofficial MV ).mp3", "title": "Ở Lại - Dick ft Bí Nhe ( Unofficial MV )", "artist": "Nhac_Viet", "album": "BẠN CÓ TÀI MÀ", "query": "Nhac_Viet - Ở Lại - Dick ft Bí Nhe ( Unofficial MV )"}, {"path": "/home/kevin/Music/Nhac_Viet/BẠN CÓ TÀI MÀ/Ở Lại 2 - Huỳnh Công Hiếu ft Ronboogz [ Music Video ].mp3", "title": "Ở Lại 2 - Huỳnh Công Hiếu ft Ronboogz [ Music Video ]", "artist": "Nhac_Viet", "album": "BẠN CÓ TÀI MÀ", "query": "Nhac_Viet - Ở Lại 2 - Huỳnh Công Hiếu ft Ronboogz [ Music Video ]"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Bermuda - Chillies (Official Visualizer).mp3", "title": "Bermuda - Chillies (Official Visualizer)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Bermuda - Chillies (Official Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/CHILLIES - NHỮNG CON ĐƯỜNG SONG SONG [OFFICIAL MUSIC AUDIO].mp3", "title": "CHILLIES - NHỮNG CON ĐƯỜNG SONG SONG [OFFICIAL MUSIC AUDIO]", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - CHILLIES - NHỮNG CON ĐƯỜNG SONG SONG [OFFICIAL MUSIC AUDIO]"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Có Em Đời Bỗng Vui - Chillies (Official Video).mp3", "title": "Có Em Đời Bỗng Vui - Chillies (Official Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Có Em Đời Bỗng Vui - Chillies (Official Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Cơn Mưa Rào Đầu Tiên [OST Mùa Hè Đẹp Nhất] - Chillies.mp3", "title": "Cơn Mưa Rào Đầu Tiên [OST Mùa Hè Đẹp Nhất] - Chillies", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Cơn Mưa Rào Đầu Tiên [OST Mùa Hè Đẹp Nhất] - Chillies"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Cứ Chill Thôi - Chillies (Official Music Video) ft. Suni Hạ Linh & Rhymastic.mp3", "title": "Cứ Chill Thôi - Chillies (Official Music Video) ft. Suni Hạ Linh & Rhymastic", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Cứ Chill Thôi - Chillies (Official Music Video) ft. Suni Hạ Linh & Rhymastic"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Dễ - Chillies (Official Visualizer).mp3", "title": "Dễ - Chillies (Official Visualizer)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Dễ - Chillies (Official Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Em Đừng Khóc - Chillies (Official Music Video).mp3", "title": "Em Đừng Khóc - Chillies (Official Music Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Em Đừng Khóc - Chillies (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Giá Như - Chillies (Official Music Video).mp3", "title": "Giá Như - Chillies (Official Music Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Giá Như - Chillies (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/GIẤC MƠ KHÁC - CHILLIES (Official Music Video).mp3", "title": "GIẤC MƠ KHÁC - CHILLIES (Official Music Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - GIẤC MƠ KHÁC - CHILLIES (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/GOLD - Chillies (Official Visualizer).mp3", "title": "GOLD - Chillies (Official Visualizer)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - GOLD - Chillies (Official Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Không Hối Hận - Chillies (Official Visualizer).mp3", "title": "Không Hối Hận - Chillies (Official Visualizer)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Không Hối Hận - Chillies (Official Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Lády - Chillies (Official Visualizer).mp3", "title": "Lády - Chillies (Official Visualizer)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Lády - Chillies (Official Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Mascara - Chillies x BLAZE [OFFICIAL MUSIC VIDEO].mp3", "title": "Mascara - Chillies x BLAZE [OFFICIAL MUSIC VIDEO]", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Mascara - Chillies x BLAZE [OFFICIAL MUSIC VIDEO]"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Ms. May - Chillies ft. Magazine (Official Lyric Video).mp3", "title": "Ms. May - Chillies ft. Magazine (Official Lyric Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Ms. May - Chillies ft. Magazine (Official Lyric Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Mộng Du - Chillies (Official Lyric Video).mp3", "title": "Mộng Du - Chillies (Official Lyric Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Mộng Du - Chillies (Official Lyric Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Một Cái Tên - Chillies ft. Orange (Official Lyric Video).mp3", "title": "Một Cái Tên - Chillies ft. Orange (Official Lyric Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Một Cái Tên - Chillies ft. Orange (Official Lyric Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/ngay mua đông - Chillies (Official Music Video).mp3", "title": "ngay mua đông - Chillies (Official Music Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - ngay mua đông - Chillies (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Qua Khung Cửa Sổ - Chillies [Official Music Video].mp3", "title": "Qua Khung Cửa Sổ - Chillies [Official Music Video]", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Qua Khung Cửa Sổ - Chillies [Official Music Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/TRÊN NHỮNG ĐÁM MÂY - CHILLIES (Official Music Video).mp3", "title": "TRÊN NHỮNG ĐÁM MÂY - CHILLIES (Official Music Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - TRÊN NHỮNG ĐÁM MÂY - CHILLIES (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Tình Yêu Mới - Chillies (Official Performance Video).mp3", "title": "Tình Yêu Mới - Chillies (Official Performance Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Tình Yêu Mới - Chillies (Official Performance Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Và Thế Là Hết - Chillies (Original).mp3", "title": "Và Thế Là Hết - Chillies (Original)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Và Thế Là Hết - Chillies (Original)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/VÌ SAO - CHILLIES - OFFICIAL MUSIC VIDEO.mp3", "title": "VÌ SAO - CHILLIES - OFFICIAL MUSIC VIDEO", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - VÌ SAO - CHILLIES - OFFICIAL MUSIC VIDEO"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Vùng Ký Ức - Chillies (Official Music Video).mp3", "title": "Vùng Ký Ức - Chillies (Official Music Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Vùng Ký Ức - Chillies (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/ĐAI LÔ MĂT TRƠI - CHILLIES (Official Music Video).mp3", "title": "ĐAI LÔ MĂT TRƠI - CHILLIES (Official Music Video)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - ĐAI LÔ MĂT TRƠI - CHILLIES (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Đi Tìm - Chillies (Official Visualizer).mp3", "title": "Đi Tìm - Chillies (Official Visualizer)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Đi Tìm - Chillies (Official Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/Đôi Cánh - Chillies (Official Visualizer).mp3", "title": "Đôi Cánh - Chillies (Official Visualizer)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - Đôi Cánh - Chillies (Official Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/CHILLES/ĐƯỜNG CHÂN TRỜI - CHILLIES (OFFICIAL MUSIC VIDEO).mp3", "title": "ĐƯỜNG CHÂN TRỜI - CHILLIES (OFFICIAL MUSIC VIDEO)", "artist": "Nhac_Viet", "album": "CHILLES", "query": "Nhac_Viet - ĐƯỜNG CHÂN TRỜI - CHILLIES (OFFICIAL MUSIC VIDEO)"}, {"path": "/home/kevin/Music/Nhac_Viet/DaLab/Sinh Ra Đã Là Thứ Đối Lập Nhau - Emcee L (Da LAB) ft. Badbies (Official MV).mp3", "title": "Sinh Ra Đã Là Thứ Đối Lập Nhau - Emcee L (Da LAB) ft. Badbies (Official MV)", "artist": "Nhac_Viet", "album": "DaLab", "query": "Nhac_Viet - Sinh Ra Đã Là Thứ Đối Lập Nhau - Emcee L (Da LAB) ft. Badbies (Official MV)"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/(147) Dangrangto - 'hãy đến đây bên anh trong một chiều mùa thu...' (Audio Visualizer) - YouTube.mp3", "title": "(147) Dangrangto - 'hãy đến đây bên anh trong một chiều mùa thu...' (Audio Visualizer)", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - (147) Dangrangto - 'hãy đến đây bên anh trong một chiều mùa thu...' (Audio Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/(147) Dangrangto - 'thế giới của anh' (Prod. DONAL, Lespace) [Official M-V] - YouTube.mp3", "title": "(147) Dangrangto - 'thế giới của anh' (Prod. DONAL, Lespace) [Official M-V]", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - (147) Dangrangto - 'thế giới của anh' (Prod. DONAL, Lespace) [Official M-V]"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/(147) Dangrangto - 'để dành cho em' (Visualizer) - YouTube.mp3", "title": "(147) Dangrangto - 'để dành cho em' (Visualizer)", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - (147) Dangrangto - 'để dành cho em' (Visualizer)"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/(147) LOVE IS - DANGRANGTO (PROD. SMILEY PANDA, DONAL) - HITSTORY - Chuyện Nhạc - YouTube.mp3", "title": "(147) LOVE IS - DANGRANGTO (PROD. SMILEY PANDA, DONAL) - HITSTORY - Chuyện Nhạc", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - (147) LOVE IS - DANGRANGTO (PROD. SMILEY PANDA, DONAL) - HITSTORY - Chuyện Nhạc"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/CHẤM HẾT (ZANG REMIX) - ZEXZEX ft Dangrangto.mp3", "title": "CHẤM HẾT (ZANG REMIX) - ZEXZEX ft Dangrangto", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - CHẤM HẾT (ZANG REMIX) - ZEXZEX ft Dangrangto"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/Chấm Hết.mp3", "title": "Chấm Hết", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - Chấm Hết"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/Dangrangto - MOIEM (nauttie remix) -- ( Lyrics).mp3", "title": "Dangrangto - MOIEM (nauttie remix) -- ( Lyrics)", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - Dangrangto - MOIEM (nauttie remix) -- ( Lyrics)"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/PUPPY & DANGRANGTO - WRONG TIMES - Live at LAB RADAR - ZLAB.mp3", "title": "PUPPY & DANGRANGTO - WRONG TIMES - Live at LAB RADAR - ZLAB", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - PUPPY & DANGRANGTO - WRONG TIMES - Live at LAB RADAR - ZLAB"}, {"path": "/home/kevin/Music/Nhac_Viet/Dangrangto/Wrong Times - Puppy, Dangrangto - hqhuy cover (ft. Hziaa).mp3", "title": "Wrong Times - Puppy, Dangrangto - hqhuy cover (ft. Hziaa)", "artist": "Nhac_Viet", "album": "Dangrangto", "query": "Nhac_Viet - Wrong Times - Puppy, Dangrangto - hqhuy cover (ft. Hziaa)"}, {"path": "/home/kevin/Music/Nhac_Viet/Delano Pham/(EP. Ocean) GIAC MO NGAY HA - Spica feat. Delano Phạm.mp3", "title": "(EP. Ocean) GIAC MO NGAY HA - Spica feat. Delano Phạm", "artist": "Nhac_Viet", "album": "Delano Pham", "query": "Nhac_Viet - (EP. Ocean) GIAC MO NGAY HA - Spica feat. Delano Phạm"}, {"path": "/home/kevin/Music/Nhac_Viet/Delano Pham/(EP. Ocean) LỜI YÊU - Spica feat. Delano Phạm.mp3", "title": "(EP. Ocean) LỜI YÊU - Spica feat. Delano Phạm", "artist": "Nhac_Viet", "album": "Delano Pham", "query": "Nhac_Viet - (EP. Ocean) LỜI YÊU - Spica feat. Delano Phạm"}, {"path": "/home/kevin/Music/Nhac_Viet/Delano Pham/(EP. Ocean) ĐAP AN - Spica feat. Delano Phạm.mp3", "title": "(EP. Ocean) ĐAP AN - Spica feat. Delano Phạm", "artist": "Nhac_Viet", "album": "Delano Pham", "query": "Nhac_Viet - (EP. Ocean) ĐAP AN - Spica feat. Delano Phạm"}, {"path": "/home/kevin/Music/Nhac_Viet/Don Raemo/Don Raemo - RIGHT NOW (MV) - YouTube.mp3", "title": "Don Raemo - RIGHT NOW (MV)", "artist": "Nhac_Viet", "album": "Don Raemo", "query": "Nhac_Viet - Don Raemo - RIGHT NOW (MV)"}, {"path": "/home/kevin/Music/Nhac_Viet/Don Raemo/Don Raemo - Trafalgar D Law (feat. Bewata) [Official Music Video] - YouTube.mp3", "title": "Don Raemo - Trafalgar D Law (feat. Bewata) [Official Music Video]", "artist": "Nhac_Viet", "album": "Don Raemo", "query": "Nhac_Viet - Don Raemo - Trafalgar D Law (feat. Bewata) [Official Music Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/Don Raemo/Don Raemo - ĐIỀU ANH MUỐN NÓI [Official Audio] - YouTube.mp3", "title": "Don Raemo - ĐIỀU ANH MUỐN NÓI [Official Audio]", "artist": "Nhac_Viet", "album": "Don Raemo", "query": "Nhac_Viet - Don Raemo - ĐIỀU ANH MUỐN NÓI [Official Audio]"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV Lyric] Hạnh Phúc Ngọt Ngào - Dấu Vân Tay - YouTube.mp3", "title": "[MV Lyric] Hạnh Phúc Ngọt Ngào - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV Lyric] Hạnh Phúc Ngọt Ngào - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV Lyric] Lối Đi Riêng - Dấu Vân Tay - YouTube.mp3", "title": "[MV Lyric] Lối Đi Riêng - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV Lyric] Lối Đi Riêng - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV Lyric] Những Chú Chuột Lúc Nhúc - Dấu Vân Tay - YouTube.mp3", "title": "[MV Lyric] Những Chú Chuột Lúc Nhúc - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV Lyric] Những Chú Chuột Lúc Nhúc - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV Lyric] Những Thành Phố Mơ Màng - Dấu Vân Tay  - YouTube.mp3", "title": "[MV Lyric] Những Thành Phố Mơ Màng - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV Lyric] Những Thành Phố Mơ Màng - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV Lyric] Đến Bây Giờ - Dau Van Tay - YouTube.mp3", "title": "[MV Lyric] Đến Bây Giờ - Dau Van Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV Lyric] Đến Bây Giờ - Dau Van Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV Lyric] Để Rồi Mai Đây - Dấu Vân Tay  - YouTube.mp3", "title": "[MV Lyric] Để Rồi Mai Đây - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV Lyric] Để Rồi Mai Đây - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV] Cung Hinh Dung - Dấu Vân Tay - YouTube.mp3", "title": "[MV] Cung Hinh Dung - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV] Cung Hinh Dung - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV] Giấc Mơ Của Loài Người - Dấu Vân Tay  - YouTube.mp3", "title": "[MV] Giấc Mơ Của Loài Người - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV] Giấc Mơ Của Loài Người - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Dấu Vân Tay/[MV] Đoi Bo Cau Đen - Dấu Vân Tay - YouTube.mp3", "title": "[MV] Đoi Bo Cau Đen - Dấu Vân Tay", "artist": "Nhac_Viet", "album": "Dấu Vân Tay", "query": "Nhac_Viet - [MV] Đoi Bo Cau Đen - Dấu Vân Tay"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/ EREN x Lil Liem - hãy cho con chịu đau khổ thay em (Eren verse) - YouTube.mp3", "title": "EREN x Lil Liem - hãy cho con chịu đau khổ thay em (Eren verse)", "artist": "Nhac_Viet", "album": "Eren, Lil Liem, fishy", "query": "Nhac_Viet - EREN x Lil Liem - hãy cho con chịu đau khổ thay em (Eren verse)"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/BIẾN TAN - EREN (ft VCC LEFT HAND) - - MỘNG album - YouTube.mp3", "title": "BIẾN TAN - EREN (ft VCC LEFT HAND) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - BIẾN TAN - EREN (ft VCC LEFT HAND) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/CHỜ EM ĐẾN - EREN (ft Bbynascar) - - MỘNG album - YouTube.mp3", "title": "CHỜ EM ĐẾN - EREN (ft Bbynascar) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - CHỜ EM ĐẾN - EREN (ft Bbynascar) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/CÒN LẠI GÌ - EREN - - MỘNG album - YouTube.mp3", "title": "CÒN LẠI GÌ - EREN - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - CÒN LẠI GÌ - EREN - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/EREN - BEN ANH (ft. Lil Liem) - OFFICIAL VISUAL - YouTube.mp3", "title": "EREN - BEN ANH (ft. Lil Liem) - OFFICIAL VISUAL", "artist": "Nhac_Viet", "album": "Eren, Lil Liem, fishy", "query": "Nhac_Viet - EREN - BEN ANH (ft. Lil Liem) - OFFICIAL VISUAL"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/Lãng Quên - EREN, fishy ( OFFICIAL VIDEO ) - YouTube.mp3", "title": "Lãng Quên - EREN, fishy ( OFFICIAL VIDEO )", "artist": "Nhac_Viet", "album": "Eren, Lil Liem, fishy", "query": "Nhac_Viet - Lãng Quên - EREN, fishy ( OFFICIAL VIDEO )"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/MỘNG HUYỄN - EREN - - MỘNG album - YouTube.mp3", "title": "MỘNG HUYỄN - EREN - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - MỘNG HUYỄN - EREN - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/NGỌT NGÀO - EREN (ft Eva) - - MỘNG album - YouTube.mp3", "title": "NGỌT NGÀO - EREN (ft Eva) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - NGỌT NGÀO - EREN (ft Eva) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/NHỚ VÌ - EREN (ft 3FE) - - MỘNG album - YouTube.mp3", "title": "NHỚ VÌ - EREN (ft 3FE) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - NHỚ VÌ - EREN (ft 3FE) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/NẮNG - EREN (ft fishy) - - MỘNG album - YouTube.mp3", "title": "NẮNG - EREN (ft fishy) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - NẮNG - EREN (ft fishy) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/NẾU - EREN (ft Eva) - - MỘNG album - YouTube.mp3", "title": "NẾU - EREN (ft Eva) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - NẾU - EREN (ft Eva) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/THÌ THẦM - EREN - - MỘNG album - YouTube.mp3", "title": "THÌ THẦM - EREN - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - THÌ THẦM - EREN - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/TỪNG - EREN (ft Lil Liem) - - MỘNG album - YouTube.mp3", "title": "TỪNG - EREN (ft Lil Liem) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - TỪNG - EREN (ft Lil Liem) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/VẤN VƯƠNG - EREN - - MỘNG album - YouTube.mp3", "title": "VẤN VƯƠNG - EREN - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - VẤN VƯƠNG - EREN - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/VỘI VÀNG - EREN - - MỘNG album - YouTube.mp3", "title": "VỘI VÀNG - EREN - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - VỘI VÀNG - EREN - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/ĐÁNH CẮP - EREN (ft Taki) - - MỘNG album - YouTube.mp3", "title": "ĐÁNH CẮP - EREN (ft Taki) - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - ĐÁNH CẮP - EREN (ft Taki) - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/Eren, Lil Liem, fishy/ĐÊM CUỐI - EREN - - MỘNG album - YouTube.mp3", "title": "ĐÊM CUỐI - EREN - - MỘNG album", "artist": "Nhac_Viet", "album": "- MỘNG", "query": "Nhac_Viet - ĐÊM CUỐI - EREN - - MỘNG album"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/AnhSang-ManDem_Album/hoá ra….mp3", "title": "hoá ra…", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - hoá ra…"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/AnhSang-ManDem_Album/mộng tình.mp3", "title": "mộng tình", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - mộng tình"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/AnhSang-ManDem_Album/mới hôm qua.mp3", "title": "mới hôm qua", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - mới hôm qua"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/AnhSang-ManDem_Album/đôi mắt kẻ tình si.mp3", "title": "đôi mắt kẻ tình si", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - đôi mắt kẻ tình si"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/có hẹn với thanh xuân - MONSTAR - official music video.mp3", "title": "có hẹn với thanh xuân - MONSTAR - official music video", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - có hẹn với thanh xuân - MONSTAR - official music video"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/dự báo thời tiết hôm nay mưa.mp3", "title": "dự báo thời tiết hôm nay mưa", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - dự báo thời tiết hôm nay mưa"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/giu lay lam gi.mp3", "title": "giu lay lam gi", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - giu lay lam gi"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/tinh yeu cham tre.mp3", "title": "tinh yeu cham tre", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - tinh yeu cham tre"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/Trái đất ôm Mặt trời - KAI ĐINH x GREY D x AMEE - from SUMMEROOM Band Session.mp3", "title": "Trái đất ôm Mặt trời - KAI ĐINH x GREY D x AMEE - from SUMMEROOM Band Session", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - Trái đất ôm Mặt trời - KAI ĐINH x GREY D x AMEE - from SUMMEROOM Band Session"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/VAICAUNOICOKHIENNGUOITHAYDOI.mp3", "title": "VAICAUNOICOKHIENNGUOITHAYDOI", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - VAICAUNOICOKHIENNGUOITHAYDOI"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/yêu em như….mp3", "title": "yêu em như…", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - yêu em như…"}, {"path": "/home/kevin/Music/Nhac_Viet/GREY-D/đưa em về nhàa.mp3", "title": "đưa em về nhàa", "artist": "Nhac_Viet", "album": "GREY-D", "query": "Nhac_Viet - đưa em về nhàa"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Anh Nên Đi Khỏi Đây (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Anh Nên Đi Khỏi Đây (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Anh Nên Đi Khỏi Đây (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Cho Em An Toàn (prod. by Kewtiie) [Official Lyric Video] - YouTube.mp3", "title": "HIEUTHUHAI - Cho Em An Toàn (prod. by Kewtiie) [Official Lyric Video]", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Cho Em An Toàn (prod. by Kewtiie) [Official Lyric Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Chờ Tới Khi Anh Về ft. Hoàng Tôn (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Chờ Tới Khi Anh Về ft. Hoàng Tôn (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Chờ Tới Khi Anh Về ft. Hoàng Tôn (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Crocodile Tears (prod. by Kewtiie) l Official Music Video - YouTube.mp3", "title": "HIEUTHUHAI - Crocodile Tears (prod. by Kewtiie) l", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Crocodile Tears (prod. by Kewtiie) l"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Dạo Gần Đây Anh Thấy Anh Không Bằng Ai Hết (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Dạo Gần Đây Anh Thấy Anh Không Bằng Ai Hết (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Dạo Gần Đây Anh Thấy Anh Không Bằng Ai Hết (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Exit Sign (prod. by Kewtiie) ft. marzuz [Official Lyric Video] - YouTube.mp3", "title": "HIEUTHUHAI - Exit Sign (prod. by Kewtiie) ft. marzuz [Official Lyric Video]", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Exit Sign (prod. by Kewtiie) ft. marzuz [Official Lyric Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Hết Yêu (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Hết Yêu (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Hết Yêu (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Không Thể Say (prod. by Kewtiie) l Official Video - YouTube.mp3", "title": "HIEUTHUHAI - Không Thể Say (prod. by Kewtiie) l Official Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Không Thể Say (prod. by Kewtiie) l Official Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Người Im Lặng Gặp Người Hay Nói.mp3", "title": "HIEUTHUHAI - Người Im Lặng Gặp Người Hay Nói", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Người Im Lặng Gặp Người Hay Nói"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - ngủ một mình (tình rất tình) ft. negav (prod. by kewtiie) - YouTube.mp3", "title": "HIEUTHUHAI - ngủ một mình (tình rất tình) ft. negav (prod. by kewtiie)", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - ngủ một mình (tình rất tình) ft. negav (prod. by kewtiie)"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - ngủ một mình ft. negav (prod. by kewtiie) - official mv - YouTube.mp3", "title": "HIEUTHUHAI - ngủ một mình ft. negav (prod. by kewtiie) - official mv", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - ngủ một mình ft. negav (prod. by kewtiie) - official mv"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - NOLOVENOLIFE (prod. by Kewtiie) [Official Lyric Video] - YouTube.mp3", "title": "HIEUTHUHAI - NOLOVENOLIFE (prod. by Kewtiie) [Official Lyric Video]", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - NOLOVENOLIFE (prod. by Kewtiie) [Official Lyric Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Vacheron Louie V ft. Hustlang Robber (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Vacheron Louie V ft. Hustlang Robber (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Vacheron Louie V ft. Hustlang Robber (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Vệ Tinh ft. Hoàng Tôn (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Vệ Tinh ft. Hoàng Tôn (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Vệ Tinh ft. Hoàng Tôn (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Đáng Lý Anh Nên Yêu Em Hơn ft. HURRYKNG (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Đáng Lý Anh Nên Yêu Em Hơn ft. HURRYKNG (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Đáng Lý Anh Nên Yêu Em Hơn ft. HURRYKNG (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Đâu Có Ai Nhìn (prod. by Kewtiie) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Đâu Có Ai Nhìn (prod. by Kewtiie) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Đâu Có Ai Nhìn (prod. by Kewtiie) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI - Đâu Cần Gì Hơn (prod. by Kewtiie & WOKEUP) - Official Lyric Video - YouTube.mp3", "title": "HIEUTHUHAI - Đâu Cần Gì Hơn (prod. by Kewtiie & WOKEUP) - Official Lyric Video", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI - Đâu Cần Gì Hơn (prod. by Kewtiie & WOKEUP) - Official Lyric Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Hieu_Thu_High/HIEUTHUHAI X LOWNA - -237C [Lyrics] - YouTube.mp3", "title": "HIEUTHUHAI X LOWNA - -237C [Lyrics]", "artist": "Nhac_Viet", "album": "Hieu_Thu_High", "query": "Nhac_Viet - HIEUTHUHAI X LOWNA - -237C [Lyrics]"}, {"path": "/home/kevin/Music/Nhac_Viet/Hngle/Buông.mp3", "title": "Buông", "artist": "Nhac_Viet", "album": "Hngle", "query": "Nhac_Viet - Buông"}, {"path": "/home/kevin/Music/Nhac_Viet/Hngle/Hngle - KHÔNG BUÔNG ft. Ari - Official Music Video.mp3", "title": "Hngle - KHÔNG BUÔNG ft. Ari -", "artist": "Nhac_Viet", "album": "Hngle", "query": "Nhac_Viet - Hngle - KHÔNG BUÔNG ft. Ari -"}, {"path": "/home/kevin/Music/Nhac_Viet/Juky San/Người Đầu Tiên - Juky San feat. buitruonglinh.mp3", "title": "Người Đầu Tiên - Juky San feat. buitruonglinh", "artist": "Nhac_Viet", "album": "Juky San", "query": "Nhac_Viet - Người Đầu Tiên - Juky San feat. buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/Juky San/Người Đầu Tiên - Juky San ft. LAMOON.mp3", "title": "Người Đầu Tiên - Juky San ft. LAMOON", "artist": "Nhac_Viet", "album": "Juky San", "query": "Nhac_Viet - Người Đầu Tiên - Juky San ft. LAMOON"}, {"path": "/home/kevin/Music/Nhac_Viet/KIMLONG/(138) KIMLONG x @JaysonLei - dayandnight (no sleep club ver.) I Performance Video - YouTube.mp3", "title": "(138) KIMLONG x @JaysonLei - dayandnight (no sleep club ver.) I Performance Video", "artist": "Nhac_Viet", "album": "KIMLONG", "query": "Nhac_Viet - (138) KIMLONG x @JaysonLei - dayandnight (no sleep club ver.) I Performance Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Lou Hoang/Yêu một người có lẽ - Lou Hoàng, Miu Lê - hqhuy cover (ft. Hziaa).mp3", "title": "Yêu một người có lẽ - Lou Hoàng, Miu Lê - hqhuy cover (ft. Hziaa)", "artist": "Nhac_Viet", "album": "Lou Hoang", "query": "Nhac_Viet - Yêu một người có lẽ - Lou Hoàng, Miu Lê - hqhuy cover (ft. Hziaa)"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Covamua (Feat. Mạc Mai Sương) - YouTube.mp3", "title": "Madihu - Covamua (Feat. Mạc Mai Sương)", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Covamua (Feat. Mạc Mai Sương)"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Có em (Feat. Low G) [Official MV].mp3", "title": "Madihu - Có em (Feat. Low G) [Official MV]", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Có em (Feat. Low G) [Official MV]"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Có Em (Solo Version) - YouTube.mp3", "title": "Madihu - Có Em (Solo Version)", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Có Em (Solo Version)"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Có Khi (Feat. Low G) - Official MV - YouTube.mp3", "title": "Madihu - Có Khi (Feat. Low G) -", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Có Khi (Feat. Low G) -"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Có Khi (Solo Version) - YouTube.mp3", "title": "Madihu - Có Khi (Solo Version)", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Có Khi (Solo Version)"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Em Đâu Cần (Feat. tlinh) [Lyrics Video] - YouTube.mp3", "title": "Madihu - Em Đâu Cần (Feat. tlinh) [Lyrics Video]", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Em Đâu Cần (Feat. tlinh) [Lyrics Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Thôi hẹn em (Official Music Video) - YouTube.mp3", "title": "Madihu - Thôi hẹn em (Official Music Video)", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Thôi hẹn em (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Vì Anh Đâu Có Biết (Solo Version) - YouTube.mp3", "title": "Madihu - Vì Anh Đâu Có Biết (Solo Version)", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Vì Anh Đâu Có Biết (Solo Version)"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Vườn mây (Feat. Mạc Mai Sương) [Official MV] - YouTube.mp3", "title": "Madihu - Vườn mây (Feat. Mạc Mai Sương) [Official MV]", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Vườn mây (Feat. Mạc Mai Sương) [Official MV]"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Madihu - Đê Anh Không - Official Music Video - YouTube.mp3", "title": "Madihu - Đê Anh Không -", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Madihu - Đê Anh Không -"}, {"path": "/home/kevin/Music/Nhac_Viet/Madihu/Vì Anh Đâu Có Biết - Madihu (Feat. Vũ.) - Official MV.mp3", "title": "Vì Anh Đâu Có Biết - Madihu (Feat. Vũ.) -", "artist": "Nhac_Viet", "album": "Madihu", "query": "Nhac_Viet - Vì Anh Đâu Có Biết - Madihu (Feat. Vũ.) -"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Ai Mới Là Kẻ Xấu Xa - RPT MCK .mp3", "title": "Ai Mới Là Kẻ Xấu Xa - RPT MCK", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Ai Mới Là Kẻ Xấu Xa - RPT MCK"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Anh Đã Ổn Hơn - RPT MCK .mp3", "title": "Anh Đã Ổn Hơn - RPT MCK", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Anh Đã Ổn Hơn - RPT MCK"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Chìm Sâu - RPT MCK ( ft. Trung Trần ).mp3", "title": "Chìm Sâu - RPT MCK ( ft. Trung Trần )", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Chìm Sâu - RPT MCK ( ft. Trung Trần )"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Chỉ Một Đêm Nữa Thôi - RPT MCK ( ft. tlinh ) .mp3", "title": "Chỉ Một Đêm Nữa Thôi - RPT MCK ( ft. tlinh )", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Chỉ Một Đêm Nữa Thôi - RPT MCK ( ft. tlinh )"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Cuốn Cho Anh Một Điếu Nữa Đi - RPT MCK .mp3", "title": "Cuốn Cho Anh Một Điếu Nữa Đi - RPT MCK", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Cuốn Cho Anh Một Điếu Nữa Đi - RPT MCK"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Nghe như tình yêu - MCK remixx prod. By Kewtiie.mp3", "title": "Nghe như tình yêu - MCK remixx prod. By Kewtiie", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Nghe như tình yêu - MCK remixx prod. By Kewtiie"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/SODA - MCK prod.GC.mp3", "title": "SODA - MCK prod.GC", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - SODA - MCK prod.GC"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Suit & Tie - RPT MCK ( ft. Hoàng Tôn ).mp3", "title": "Suit & Tie - RPT MCK ( ft. Hoàng Tôn )", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Suit & Tie - RPT MCK ( ft. Hoàng Tôn )"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Thôi Em Đừng Đi - RPT MCK ( ft. Trung Trần ).mp3", "title": "Thôi Em Đừng Đi - RPT MCK ( ft. Trung Trần )", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Thôi Em Đừng Đi - RPT MCK ( ft. Trung Trần )"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/TẠI VÌ SAO (RMX) - RPT MCK ft. Limitlxss - OFFICIAL LYRIC VIDEO.mp3", "title": "TẠI VÌ SAO (RMX) - RPT MCK ft. Limitlxss - OFFICIAL LYRIC VIDEO", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - TẠI VÌ SAO (RMX) - RPT MCK ft. Limitlxss - OFFICIAL LYRIC VIDEO"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Tại Vì Sao - RPT MCK.mp3", "title": "Tại Vì Sao - RPT MCK", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Tại Vì Sao - RPT MCK"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Tại Vì Sao MCK nhưng bạn suy.mp3", "title": "Tại Vì Sao MCK nhưng bạn suy", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Tại Vì Sao MCK nhưng bạn suy"}, {"path": "/home/kevin/Music/Nhac_Viet/MCK/Tối Nay Ta Đi Đâu Nhờ - RPT MCK (Remix).mp3", "title": "Tối Nay Ta Đi Đâu Nhờ - RPT MCK (Remix)", "artist": "Nhac_Viet", "album": "MCK", "query": "Nhac_Viet - Tối Nay Ta Đi Đâu Nhờ - RPT MCK (Remix)"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/(101) hidden gems - the mixtape #2 - wxrdie mck tlinh soobin obito vstra dangrangto shiki hank - YouTube.mp3", "title": "(101) hidden gems - the mixtape #2 - wxrdie mck tlinh soobin obito vstra dangrangto shiki hank", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - (101) hidden gems - the mixtape #2 - wxrdie mck tlinh soobin obito vstra dangrangto shiki hank"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/(102) Tình MIX #2 - Hustlang Robber, MCK, Dangrangto, Lefthand, Tlinh, Táo, Justatee, Vsoul, Rocky CDE ... - YouTube.mp3", "title": "(102) Tình MIX #2 - Hustlang Robber, MCK, Dangrangto, Lefthand, Tlinh, Táo, Justatee, Vsoul, Rocky CDE ...", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - (102) Tình MIX #2 - Hustlang Robber, MCK, Dangrangto, Lefthand, Tlinh, Táo, Justatee, Vsoul, Rocky CDE ..."}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/99999 đóa hồng.mp3", "title": "99999 đóa hồng", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - 99999 đóa hồng"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/Bé Ơi Từ Từ - ZonWave Remix - Hot TikTok 2024.mp3", "title": "Bé Ơi Từ Từ - ZonWave Remix - Hot TikTok 2024", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - Bé Ơi Từ Từ - ZonWave Remix - Hot TikTok 2024"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/Bé ơi từ từ x Chạy ngay đi (ZonWave remix ft #SS Mashup).mp3", "title": "Bé ơi từ từ x Chạy ngay đi (ZonWave remix ft #SS Mashup)", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - Bé ơi từ từ x Chạy ngay đi (ZonWave remix ft #SS Mashup)"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/DJ KIM CHOL - RICO LATINO ft. QDT  ｜ NHẠC VIỆT MIX 2026.mp3", "title": "DJ KIM CHOL - RICO LATINO ft. QDT  ｜ NHẠC VIỆT MIX 2026", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - DJ KIM CHOL - RICO LATINO ft. QDT  ｜ NHẠC VIỆT MIX 2026"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/Không Buông x Buông - Hngle ( Lyric + slowed video) - TrucTranMC.mp3", "title": "Không Buông x Buông - Hngle ( Lyric + slowed video) - TrucTranMC", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - Không Buông x Buông - Hngle ( Lyric + slowed video) - TrucTranMC"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/Mashup Không Buông x Sài Gòn Tôi Mưa x Nắng có mang em về ( Soul Mix) -- Hayho radio.mp3", "title": "Mashup Không Buông x Sài Gòn Tôi Mưa x Nắng có mang em về ( Soul Mix) -- Hayho radio", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - Mashup Không Buông x Sài Gòn Tôi Mưa x Nắng có mang em về ( Soul Mix) -- Hayho radio"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/MIN, Juky San, BuiTruongLinh, Lamoon - Có Em Là Nhà x Người Đầu Tiên (Pizuh Mashup).mp3", "title": "MIN, Juky San, BuiTruongLinh, Lamoon - Có Em Là Nhà x Người Đầu Tiên (Pizuh Mashup)", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - MIN, Juky San, BuiTruongLinh, Lamoon - Có Em Là Nhà x Người Đầu Tiên (Pizuh Mashup)"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/THÁC NÌNG - XÍCH THÊM CHÚT - ĐẾN LÚC NÀY THÌ... - Racoon Official - Giai Điệu Gây Nghiện.mp3", "title": "THÁC NÌNG - XÍCH THÊM CHÚT - ĐẾN LÚC NÀY THÌ... - Racoon Official - Giai Điệu Gây Nghiện", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - THÁC NÌNG - XÍCH THÊM CHÚT - ĐẾN LÚC NÀY THÌ... - Racoon Official - Giai Điệu Gây Nghiện"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/VSTRA - Ai Ngoài Anh (Zang Remix).mp3", "title": "VSTRA - Ai Ngoài Anh (Zang Remix)", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - VSTRA - Ai Ngoài Anh (Zang Remix)"}, {"path": "/home/kevin/Music/Nhac_Viet/Nhac_Mixtype/VĂN MAI HƯƠNG - NHẠC TÌNH (feat. HURRYKNG) [prod. by Racoon Official] - Lyrics Video.mp3", "title": "VĂN MAI HƯƠNG - NHẠC TÌNH (feat. HURRYKNG) [prod. by Racoon Official] - Lyrics Video", "artist": "Nhac_Viet", "album": "Nhac_Mixtype", "query": "Nhac_Viet - VĂN MAI HƯƠNG - NHẠC TÌNH (feat. HURRYKNG) [prod. by Racoon Official] - Lyrics Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Obito/BUỒN HAY VUI - VSOUL x MCK x Obito x Ronboogz x Boyzed (Official Audio).mp3", "title": "BUỒN HAY VUI - VSOUL x MCK x Obito x Ronboogz x Boyzed (Official Audio)", "artist": "Nhac_Viet", "album": "Obito", "query": "Nhac_Viet - BUỒN HAY VUI - VSOUL x MCK x Obito x Ronboogz x Boyzed (Official Audio)"}, {"path": "/home/kevin/Music/Nhac_Viet/Obito/Lyrics - 'dạo này' - obito.mp3", "title": "Lyrics - 'dạo này' - obito", "artist": "Nhac_Viet", "album": "Obito", "query": "Nhac_Viet - Lyrics - 'dạo này' - obito"}, {"path": "/home/kevin/Music/Nhac_Viet/Obito/Obito - Hà Nội ft. VSTRA.mp3", "title": "Obito - Hà Nội ft. VSTRA", "artist": "Nhac_Viet", "album": "Obito", "query": "Nhac_Viet - Obito - Hà Nội ft. VSTRA"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/Em la em be iu (Will M Lofi) - YouTube.mp3", "title": "Em la em be iu (Will M Lofi)", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - Em la em be iu (Will M Lofi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/Em Là Bông Hoa Của Ai - YouTube.mp3", "title": "Em Là Bông Hoa Của Ai", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - Em Là Bông Hoa Của Ai"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/Nha Đầu Ngốc - YouTube.mp3", "title": "Nha Đầu Ngốc", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - Nha Đầu Ngốc"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/Nhiều Năm Như Vậy Rồi - YouTube.mp3", "title": "Nhiều Năm Như Vậy Rồi", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - Nhiều Năm Như Vậy Rồi"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/OLEW - Chẳng Có Gì Quá Khó - Official Music Video.mp3", "title": "OLEW - Chẳng Có Gì Quá Khó -", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - OLEW - Chẳng Có Gì Quá Khó -"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/OLEW - Khi Em Là Ai - Official Music Video.mp3", "title": "OLEW - Khi Em Là Ai -", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - OLEW - Khi Em Là Ai -"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/OLEW - Đà Lạt Năm Nào Đó - Official MV.mp3", "title": "OLEW - Đà Lạt Năm Nào Đó -", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - OLEW - Đà Lạt Năm Nào Đó -"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/Olew x Minh Huy - Hãy gặp em trước khi em 25 - Official MV - EP -Có Mưa-.mp3", "title": "Olew x Minh Huy - Hãy gặp em trước khi em 25 - - EP -Có Mưa-", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - Olew x Minh Huy - Hãy gặp em trước khi em 25 - - EP -Có Mưa-"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/RỒI TA SẼ NGẮM PHÁO HOA CÙNG NHAU - MV OFFICIAL - Olew.mp3", "title": "RỒI TA SẼ NGẮM PHÁO HOA CÙNG NHAU - MV OFFICIAL - Olew", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - RỒI TA SẼ NGẮM PHÁO HOA CÙNG NHAU - MV OFFICIAL - Olew"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/Sao Anh Lại - YouTube.mp3", "title": "Sao Anh Lại", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - Sao Anh Lại"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/SAO KHÔNG LÀ EM - O LEW ft. XÁM (prod. Thuy MX) - Official Music Video.mp3", "title": "SAO KHÔNG LÀ EM - O LEW ft. XÁM (prod. Thuy MX) -", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - SAO KHÔNG LÀ EM - O LEW ft. XÁM (prod. Thuy MX) -"}, {"path": "/home/kevin/Music/Nhac_Viet/Olew/Vườn Hoa Con Cá - O.lew x Ngắn [Lyrics Video] Mưa.mp3", "title": "Vườn Hoa Con Cá - O.lew x Ngắn [Lyrics Video] Mưa", "artist": "Nhac_Viet", "album": "Olew", "query": "Nhac_Viet - Vườn Hoa Con Cá - O.lew x Ngắn [Lyrics Video] Mưa"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/d0n pku0nq ckj d3 s4u nku ck0 rack.mp3", "title": "d0n pku0nq ckj d3 s4u nku ck0 rack", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - d0n pku0nq ckj d3 s4u nku ck0 rack"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Dab - Tình Là ft. Helinn, 4rtus (Music Video).mp3", "title": "Dab - Tình Là ft. Helinn, 4rtus (Music Video)", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Dab - Tình Là ft. Helinn, 4rtus (Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Dangrangto - MOIEM (nauttie remix) -- ( Lyrics).mp3", "title": "Dangrangto - MOIEM (nauttie remix) -- ( Lyrics)", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Dangrangto - MOIEM (nauttie remix) -- ( Lyrics)"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Don Raemo - Trafalgar D Law (feat. Bewata) [Official Music Video].mp3", "title": "Don Raemo - Trafalgar D Law (feat. Bewata) [Official Music Video]", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Don Raemo - Trafalgar D Law (feat. Bewata) [Official Music Video]"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/EREN - BEN ANH (ft. Lil Liem) - OFFICIAL VISUAL.mp3", "title": "EREN - BEN ANH (ft. Lil Liem) - OFFICIAL VISUAL", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - EREN - BEN ANH (ft. Lil Liem) - OFFICIAL VISUAL"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/EREN x Lil Liem - hãy cho con chịu đau khổ thay em (Eren verse).mp3", "title": "EREN x Lil Liem - hãy cho con chịu đau khổ thay em (Eren verse)", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - EREN x Lil Liem - hãy cho con chịu đau khổ thay em (Eren verse)"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/kidsai, Niz - GIAYPHUT (Official Lyric Video).mp3", "title": "kidsai, Niz - GIAYPHUT (Official Lyric Video)", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - kidsai, Niz - GIAYPHUT (Official Lyric Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Lil Liem - uocgianhaynoiyeutoi.mp3", "title": "Lil Liem - uocgianhaynoiyeutoi", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Lil Liem - uocgianhaynoiyeutoi"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Lil Liem - uocgicoaynoiyeutoi.mp3", "title": "Lil Liem - uocgicoaynoiyeutoi", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Lil Liem - uocgicoaynoiyeutoi"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Lãng Quên - EREN, fishy ( OFFICIAL VIDEO ).mp3", "title": "Lãng Quên - EREN, fishy ( OFFICIAL VIDEO )", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Lãng Quên - EREN, fishy ( OFFICIAL VIDEO )"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/MOPHAI - Xoxad.mp3", "title": "MOPHAI - Xoxad", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - MOPHAI - Xoxad"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/MỘNG HUYỄN - EREN ( OFFICIAL VIDEO ).mp3", "title": "MỘNG HUYỄN - EREN ( OFFICIAL VIDEO )", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - MỘNG HUYỄN - EREN ( OFFICIAL VIDEO )"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Parys - anh thương mà - OFFICIAL VISUALIZER.mp3", "title": "Parys - anh thương mà - OFFICIAL VISUALIZER", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Parys - anh thương mà - OFFICIAL VISUALIZER"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Winno - Say Đắm Trong Lần Đầu (SĐTLĐ) (Official Lyric Video).mp3", "title": "Winno - Say Đắm Trong Lần Đầu (SĐTLĐ) (Official Lyric Video)", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Winno - Say Đắm Trong Lần Đầu (SĐTLĐ) (Official Lyric Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Prod-Trap_R&B/Xoxad, EREN - Giá Như - OFFICIAL MUSIC VIDEO.mp3", "title": "Xoxad, EREN - Giá Như - OFFICIAL MUSIC VIDEO", "artist": "Nhac_Viet", "album": "Prod-Trap_R&B", "query": "Nhac_Viet - Xoxad, EREN - Giá Như - OFFICIAL MUSIC VIDEO"}, {"path": "/home/kevin/Music/Nhac_Viet/RIO-52Hz/RIO - '' vạn vật như muốn ta bên nhau '' - Official MV.mp3", "title": "RIO - '' vạn vật như muốn ta bên nhau '' -", "artist": "Nhac_Viet", "album": "RIO-52Hz", "query": "Nhac_Viet - RIO - '' vạn vật như muốn ta bên nhau '' -"}, {"path": "/home/kevin/Music/Nhac_Viet/RIO-52Hz/ĐỢI (Special Version) - 52Hz, WEAN ( prod.RIO).mp3", "title": "ĐỢI (Special Version) - 52Hz, WEAN ( prod.RIO)", "artist": "Nhac_Viet", "album": "RIO-52Hz", "query": "Nhac_Viet - ĐỢI (Special Version) - 52Hz, WEAN ( prod.RIO)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thang/THẮNG - GỘI ĐẦU ft. Hà Lê (Prod. RacoonOfficial) - Lyrics Video.mp3", "title": "THẮNG - GỘI ĐẦU ft. Hà Lê (Prod. RacoonOfficial) - Lyrics Video", "artist": "Nhac_Viet", "album": "Thang", "query": "Nhac_Viet - THẮNG - GỘI ĐẦU ft. Hà Lê (Prod. RacoonOfficial) - Lyrics Video"}, {"path": "/home/kevin/Music/Nhac_Viet/Thang/Trước Khi Em Tồn Tại (Piano Version) - Thắng - Việt Anh Cover (MV Lyric).mp3", "title": "Trước Khi Em Tồn Tại (Piano Version) - Thắng - Việt Anh Cover (MV Lyric)", "artist": "Nhac_Viet", "album": "Thang", "query": "Nhac_Viet - Trước Khi Em Tồn Tại (Piano Version) - Thắng - Việt Anh Cover (MV Lyric)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thang/Trước Khi Em Tồn Tại.mp3", "title": "Trước Khi Em Tồn Tại", "artist": "Nhac_Viet", "album": "Thang", "query": "Nhac_Viet - Trước Khi Em Tồn Tại"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Ca Theo Đàn (10 of Thinhsuynghi) - YouTube.mp3", "title": "Thịnh Suy - Ca Theo Đàn (10 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Ca Theo Đàn (10 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - CHUYỆN RẰNG (Official Music Video) - YouTube.mp3", "title": "Thịnh Suy - CHUYỆN RẰNG (Official Music Video)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - CHUYỆN RẰNG (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Chết Trong Em (Official Music Video).mp3", "title": "Thịnh Suy - Chết Trong Em (Official Music Video)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Chết Trong Em (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Có Khi (8 of Thinhsuynghi) - YouTube.mp3", "title": "Thịnh Suy - Có Khi (8 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Có Khi (8 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Có Nhau (4 of Thinhsuynghi).mp3", "title": "Thịnh Suy - Có Nhau (4 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Có Nhau (4 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Cậu Bé (2 of Thinhsuynghi) - YouTube.mp3", "title": "Thịnh Suy - Cậu Bé (2 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Cậu Bé (2 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Cứ Trôi (1 of Thinhsuynghi).mp3", "title": "Thịnh Suy - Cứ Trôi (1 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Cứ Trôi (1 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Em (3 of Cú) - YouTube.mp3", "title": "Thịnh Suy - Em (3 of Cú)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Em (3 of Cú)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Lam (5 of Thinhsuynghi) - YouTube.mp3", "title": "Thịnh Suy - Lam (5 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Lam (5 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - MAI MÌNH XA (Lyrics Video).mp3", "title": "Thịnh Suy - MAI MÌNH XA (Lyrics Video)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - MAI MÌNH XA (Lyrics Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - MỘT ĐÊM SAY (X) - Official Music Video - YouTube.mp3", "title": "Thịnh Suy - MỘT ĐÊM SAY (X) -", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - MỘT ĐÊM SAY (X) -"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Ngày (1 of Cú) - YouTube.mp3", "title": "Thịnh Suy - Ngày (1 of Cú)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Ngày (1 of Cú)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Nói Gì Nữa (Music Video) - YouTube.mp3", "title": "Thịnh Suy - Nói Gì Nữa (Music Video)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Nói Gì Nữa (Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Please Don't Go (7 of Thinhsuynghi) - YouTube.mp3", "title": "Thịnh Suy - Please Don't Go (7 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Please Don't Go (7 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Slowly (MV) - YouTube.mp3", "title": "Thịnh Suy - Slowly (MV)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Slowly (MV)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Thường (2 of Cú).mp3", "title": "Thịnh Suy - Thường (2 of Cú)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Thường (2 of Cú)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Thắc Mắc (MĐX) - YouTube.mp3", "title": "Thịnh Suy - Thắc Mắc (MĐX)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Thắc Mắc (MĐX)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - tiny love.mp3", "title": "Thịnh Suy - tiny love", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - tiny love"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Trống (3 of Thinhsuynghi) - YouTube.mp3", "title": "Thịnh Suy - Trống (3 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Trống (3 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Tình Yêu Xanh Lá (juju).mp3", "title": "Thịnh Suy - Tình Yêu Xanh Lá (juju)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Tình Yêu Xanh Lá (juju)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Vừa (4 of Cú) - YouTube.mp3", "title": "Thịnh Suy - Vừa (4 of Cú)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Vừa (4 of Cú)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Đêm (Official Music Video) - YouTube.mp3", "title": "Thịnh Suy - Đêm (Official Music Video)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Đêm (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Thịnh Suy /Thịnh Suy - Đưa Em Vào Trong (9 of Thinhsuynghi) - YouTube.mp3", "title": "Thịnh Suy - Đưa Em Vào Trong (9 of Thinhsuynghi)", "artist": "Nhac_Viet", "album": "Thịnh Suy ", "query": "Nhac_Viet - Thịnh Suy - Đưa Em Vào Trong (9 of Thinhsuynghi)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tlinh/KayC - Bao Nhiêu Loài Hoa Remix (feat. tlinh & Machiot).mp3", "title": "KayC - Bao Nhiêu Loài Hoa Remix (feat. tlinh & Machiot)", "artist": "Nhac_Viet", "album": "Tlinh", "query": "Nhac_Viet - KayC - Bao Nhiêu Loài Hoa Remix (feat. tlinh & Machiot)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tlinh/Low G - Love Game (ft. tlinh) - OFFICIAL MUSIC VIDEO.mp3", "title": "Low G - Love Game (ft. tlinh) - OFFICIAL MUSIC VIDEO", "artist": "Nhac_Viet", "album": "Tlinh", "query": "Nhac_Viet - Low G - Love Game (ft. tlinh) - OFFICIAL MUSIC VIDEO"}, {"path": "/home/kevin/Music/Nhac_Viet/Tlinh/PHÓNG ZÌN ZÌN - Low G x tlinh - OFFICIAL AUDIO.mp3", "title": "PHÓNG ZÌN ZÌN - Low G x tlinh - OFFICIAL AUDIO", "artist": "Nhac_Viet", "album": "Tlinh", "query": "Nhac_Viet - PHÓNG ZÌN ZÌN - Low G x tlinh - OFFICIAL AUDIO"}, {"path": "/home/kevin/Music/Nhac_Viet/Tlinh/SonaOne, tlinh - POLITE (Official Music Video).mp3", "title": "SonaOne, tlinh - POLITE (Official Music Video)", "artist": "Nhac_Viet", "album": "Tlinh", "query": "Nhac_Viet - SonaOne, tlinh - POLITE (Official Music Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tlinh/WEAN  shhhhhhh.. feat tlinh (Official Lyrics Video).mp3", "title": "WEAN  shhhhhhh.. feat tlinh (Official Lyrics Video)", "artist": "Nhac_Viet", "album": "Tlinh", "query": "Nhac_Viet - WEAN  shhhhhhh.. feat tlinh (Official Lyrics Video)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../1 Phút - Andiez.mp3", "title": "1 Phút - Andiez", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - 1 Phút - Andiez"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Anh ghét mình vì còn nhớ em của Vinh Khuất nhưng buồn hơn.mp3", "title": "Anh ghét mình vì còn nhớ em của Vinh Khuất nhưng buồn hơn", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Anh ghét mình vì còn nhớ em của Vinh Khuất nhưng buồn hơn"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Giấc Mơ Của Em (Suy Version).mp3", "title": "Giấc Mơ Của Em (Suy Version)", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Giấc Mơ Của Em (Suy Version)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Hngle/Buông.mp3", "title": "Buông", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Buông"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Hngle/Hngle - KHÔNG BUÔNG ft. Ari - Official Music Video.mp3", "title": "Hngle - KHÔNG BUÔNG ft. Ari -", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Hngle - KHÔNG BUÔNG ft. Ari -"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Juky San/Người Đầu Tiên - Juky San feat. buitruonglinh.mp3", "title": "Người Đầu Tiên - Juky San feat. buitruonglinh", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Người Đầu Tiên - Juky San feat. buitruonglinh"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Juky San/Người Đầu Tiên - Juky San ft. LAMOON.mp3", "title": "Người Đầu Tiên - Juky San ft. LAMOON", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Người Đầu Tiên - Juky San ft. LAMOON"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Lou Hoang/Yêu một người có lẽ - Lou Hoàng, Miu Lê - hqhuy cover (ft. Hziaa).mp3", "title": "Yêu một người có lẽ - Lou Hoàng, Miu Lê - hqhuy cover (ft. Hziaa)", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Yêu một người có lẽ - Lou Hoàng, Miu Lê - hqhuy cover (ft. Hziaa)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/BUON..../Ngày Bên Em - Wuyn (prod by Lee) - Lyrics by Love Music.mp3", "title": "Ngày Bên Em - Wuyn (prod by Lee) - Lyrics by Love Music", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Ngày Bên Em - Wuyn (prod by Lee) - Lyrics by Love Music"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/VUIIIII/BUỒN HAY VUI - VSOUL x MCK x Obito x Ronboogz x Boyzed (Official Audio).mp3", "title": "BUỒN HAY VUI - VSOUL x MCK x Obito x Ronboogz x Boyzed (Official Audio)", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - BUỒN HAY VUI - VSOUL x MCK x Obito x Ronboogz x Boyzed (Official Audio)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/VUIIIII/MĂT MÔC - Pham Nguyên Ngoc x VAnh x Ân Nhi (Original).mp3", "title": "MĂT MÔC - Pham Nguyên Ngoc x VAnh x Ân Nhi (Original)", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - MĂT MÔC - Pham Nguyên Ngoc x VAnh x Ân Nhi (Original)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/VUIIIII/playlist tình iuuu [Ai ngoài anh,tâm trí lang thang,...].mp3", "title": "playlist tình iuuu [Ai ngoài anh,tâm trí lang thang,...]", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - playlist tình iuuu [Ai ngoài anh,tâm trí lang thang,...]"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/VUIIIII/Quang Hùng MasterD - 'Chất Gây Hại' (ft. Low G) - Official Audio - BLOOMEVER Album 'Bonus Track'.mp3", "title": "Quang Hùng MasterD - 'Chất Gây Hại' (ft. Low G) - Official Audio - BLOOMEVER Album 'Bonus Track'", "artist": "Nhac_Viet", "album": "BLOOMEVER", "query": "Nhac_Viet - Quang Hùng MasterD - 'Chất Gây Hại' (ft. Low G) - Official Audio - BLOOMEVER Album 'Bonus Track'"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/VUIIIII/Say Yes (Vietnamese Version).mp3", "title": "Say Yes (Vietnamese Version)", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Say Yes (Vietnamese Version)"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/VUIIIII/Và Thế Giới đã (Mất Đi Một Người Cô Đơn) Có Em Chờ (Pizuh Mashup) - MIN, marzuz, Changg, Mr.A.mp3", "title": "Và Thế Giới đã (Mất Đi Một Người Cô Đơn) Có Em Chờ (Pizuh Mashup) - MIN, marzuz, Changg, Mr.A", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Và Thế Giới đã (Mất Đi Một Người Cô Đơn) Có Em Chờ (Pizuh Mashup) - MIN, marzuz, Changg, Mr.A"}, {"path": "/home/kevin/Music/Nhac_Viet/Tong_Hop/VUIIIII/Ở Lại 2 - Huỳnh Công Hiếu ft Ronboogz [ Music Video ].mp3", "title": "Ở Lại 2 - Huỳnh Công Hiếu ft Ronboogz [ Music Video ]", "artist": "Nhac_Viet", "album": "Tong_Hop", "query": "Nhac_Viet - Ở Lại 2 - Huỳnh Công Hiếu ft Ronboogz [ Music Video ]"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/(147) VSTRA - Luôn Hằng Yêu Anh (Official Audio) - Triệu Album - YouTube.mp3", "title": "(147) VSTRA - Luôn Hằng Yêu Anh (Official Audio) - Triệu Album", "artist": "Nhac_Viet", "album": "Triệu", "query": "Nhac_Viet - (147) VSTRA - Luôn Hằng Yêu Anh (Official Audio) - Triệu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Ai Ngoài Anh (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Ai Ngoài Anh (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Ai Ngoài Anh (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Em (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Em (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Em (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Em Muốn Được Bay (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Em Muốn Được Bay (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Em Muốn Được Bay (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Em Vẫn Cần Anh (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Em Vẫn Cần Anh (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Em Vẫn Cần Anh (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Falling For U (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Falling For U (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Falling For U (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Ghét Em Đi, Làm Ơn (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Ghét Em Đi, Làm Ơn (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Ghét Em Đi, Làm Ơn (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Hôn Vào Đây Đi (feat. hairan, antransax) (Official Audio) (Explicit) - Trieu Album - YouTube.mp3", "title": "VSTRA - Hôn Vào Đây Đi (feat. hairan, antransax) (Official Audio) (Explicit) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Hôn Vào Đây Đi (feat. hairan, antransax) (Official Audio) (Explicit) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - I'M A STVR (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - I'M A STVR (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - I'M A STVR (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Không Thể Quên (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Không Thể Quên (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Không Thể Quên (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Rượu Tây Khói Trắng (feat. Tage) (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Rượu Tây Khói Trắng (feat. Tage) (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Rượu Tây Khói Trắng (feat. Tage) (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Trip Y Hệt (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Trip Y Hệt (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Trip Y Hệt (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Tự Hát (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Tự Hát (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Tự Hát (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Yêu Ơi (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Yêu Ơi (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Yêu Ơi (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Để Có Được Anh (Official Audio) - Trieu Album - YouTube.mp3", "title": "VSTRA - Để Có Được Anh (Official Audio) - Trieu Album", "artist": "Nhac_Viet", "album": "Trieu", "query": "Nhac_Viet - VSTRA - Để Có Được Anh (Official Audio) - Trieu Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Vstra/VSTRA - Đừng (Official Audio) - Triệu Album- YouTube.mp3", "title": "VSTRA - Đừng (Official Audio) - Triệu Album- YouTube", "artist": "Nhac_Viet", "album": "Triệu", "query": "Nhac_Viet - VSTRA - Đừng (Official Audio) - Triệu Album- YouTube"}, {"path": "/home/kevin/Music/Nhac_Viet/Vu/binh yên - Vu. ft. Binz (Official MV) tư Album -Bao Tang Cua Nuôi Tiêc-.mp3", "title": "binh yên - Vu. ft. Binz (Official MV) tư Album -Bao Tang Cua Nuôi Tiêc-", "artist": "Nhac_Viet", "album": "Vu. ft. Binz (Official MV) tư", "query": "Nhac_Viet - binh yên - Vu. ft. Binz (Official MV) tư Album -Bao Tang Cua Nuôi Tiêc-"}, {"path": "/home/kevin/Music/Nhac_Viet/Vu/BƯỚC QUA MÙA CÔ ĐƠN - Vũ. (Official MV).mp3", "title": "BƯỚC QUA MÙA CÔ ĐƠN - Vũ. (Official MV)", "artist": "Nhac_Viet", "album": "Vu", "query": "Nhac_Viet - BƯỚC QUA MÙA CÔ ĐƠN - Vũ. (Official MV)"}, {"path": "/home/kevin/Music/Nhac_Viet/Vu/BƯỚC QUA NHAU - Vũ. (Official MV).mp3", "title": "BƯỚC QUA NHAU - Vũ. (Official MV)", "artist": "Nhac_Viet", "album": "Vu", "query": "Nhac_Viet - BƯỚC QUA NHAU - Vũ. (Official MV)"}, {"path": "/home/kevin/Music/Nhac_Viet/Vu/LẠ LÙNG - Vũ. (Original).mp3", "title": "LẠ LÙNG - Vũ. (Original)", "artist": "Nhac_Viet", "album": "Vu", "query": "Nhac_Viet - LẠ LÙNG - Vũ. (Original)"}, {"path": "/home/kevin/Music/Nhac_Viet/Vu/NHỮNG LỜI HỨA BỎ QUÊN - VŨ. x DEAR JANE (Official MV) tư Album -Bao Tang Cua Nuôi Tiêc-.mp3", "title": "NHỮNG LỜI HỨA BỎ QUÊN - VŨ. x DEAR JANE (Official MV) tư Album -Bao Tang Cua Nuôi Tiêc-", "artist": "Nhac_Viet", "album": "VŨ. x DEAR JANE (Official MV) tư", "query": "Nhac_Viet - NHỮNG LỜI HỨA BỎ QUÊN - VŨ. x DEAR JANE (Official MV) tư Album -Bao Tang Cua Nuôi Tiêc-"}, {"path": "/home/kevin/Music/Nhac_Viet/Vu/Vì Anh Đâu Có Biết - Madihu (Feat. Vũ.) - Official MV.mp3", "title": "Vì Anh Đâu Có Biết - Madihu (Feat. Vũ.) -", "artist": "Nhac_Viet", "album": "Vu", "query": "Nhac_Viet - Vì Anh Đâu Có Biết - Madihu (Feat. Vũ.) -"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - bé ơi từ từ - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - bé ơi từ từ - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - bé ơi từ từ - LOI CHOI The First Album (ft. itsnk)"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - CALL ME - LOI CHOI The First Album - YouTube.mp3", "title": "(141) WREN EVANS - CALL ME - LOI CHOI The First Album", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - CALL ME - LOI CHOI The First Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - Cầu Vĩnh Tuy - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - Cầu Vĩnh Tuy - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - Cầu Vĩnh Tuy - LOI CHOI The First Album (ft. itsnk)"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - Lối Chơi (Interlude) - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - Lối Chơi (Interlude) - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - Lối Chơi (Interlude) - LOI CHOI The First Album (ft. itsnk)"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - Phóng Đổ Tim Em - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - Phóng Đổ Tim Em - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - Phóng Đổ Tim Em - LOI CHOI The First Album (ft. itsnk)"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - Quyền Anh - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - Quyền Anh - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - Quyền Anh - LOI CHOI The First Album (ft. itsnk)"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - Tình Yêu Vĩ Mô - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - Tình Yêu Vĩ Mô - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - Tình Yêu Vĩ Mô - LOI CHOI The First Album (ft. itsnk)"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - Tò Te Tí - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - Tò Te Tí - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - Tò Te Tí - LOI CHOI The First Album (ft. itsnk)"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - TỪNG QUEN - LOI CHOI The First Album- YouTube.mp3", "title": "(141) WREN EVANS - TỪNG QUEN - LOI CHOI The First Album- YouTube", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - TỪNG QUEN - LOI CHOI The First Album- YouTube"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - VIỆT KIỀU (ft. itsnk, starring @oanhdaqueen) - LOI CHOI The First Album - YouTube.mp3", "title": "(141) WREN EVANS - VIỆT KIỀU (ft. itsnk, starring @oanhdaqueen) - LOI CHOI The First Album", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - VIỆT KIỀU (ft. itsnk, starring @oanhdaqueen) - LOI CHOI The First Album"}, {"path": "/home/kevin/Music/Nhac_Viet/Wren Evans/(141) WREN EVANS - ĐĐĐ - LOI CHOI The First Album (ft. itsnk) - YouTube.mp3", "title": "(141) WREN EVANS - ĐĐĐ - LOI CHOI The First Album (ft. itsnk)", "artist": "Nhac_Viet", "album": "LOI CHOI", "query": "Nhac_Viet - (141) WREN EVANS - ĐĐĐ - LOI CHOI The First Album (ft. itsnk)"}];
+
+        let instances = [
+            "yewtu.be",
+            "invidious.lunar.icu",
+            "iv.melmac.space",
+            "invidious.projectsegfau.lt",
+            "invidious.flokinet.to",
+            "invidious.privacydev.net",
+            "inv.tux.im"
+        ];
+        
+        const zip = new JSZip();
+        let activeDownloads = 0;
+        let completedCount = 0;
+        let successCount = 0;
+        let errorCount = 0;
+        let isRunning = false;
+        let queue = [];
+
+        function log(message, type = "info") {
+            const term = document.getElementById("terminal");
+            const line = document.createElement("div");
+            line.className = `terminal-line terminal-${type}`;
+            const time = new Date().toLocaleTimeString();
+            line.textContent = `[${time}] ${message}`;
+            term.appendChild(line);
+            term.scrollTop = term.scrollHeight;
+        }
+
+        // SHA-1 helper matching Python's hashlib.sha1
+        async function sha1(str) {
+            const buf = await crypto.subtle.digest("SHA-1", new TextEncoder().encode(str));
+            return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+        }
+
+        async function loadInstances() {
+            try {
+                log("Fetching active Invidious instances list...", "info");
+                let res = await fetch("https://api.invidious.io/instances.json?sort_by=type,health");
+                let data = await res.json();
+                let fetched = data.filter(item => item[1] && item[1].type === "https" && item[1].health > 80 && item[1].api)
+                                  .map(item => item[0]);
+                if (fetched.length > 0) {
+                    // Prepend standard stable ones just in case
+                    instances = [...new Set([...fetched, ...instances])];
+                    log(`Loaded ${instances.length} healthy Invidious instances.`, "success");
+                }
+            } catch (e) {
+                log("Failed to fetch fresh instances, using built-in fallbacks.", "info");
+            }
+        }
+
+        function buildQueueUI() {
+            const grid = document.getElementById("songGrid");
+            grid.innerHTML = "";
+            document.getElementById("queueStats").textContent = `Total: ${tracks.length}`;
+            
+            tracks.forEach((t, index) => {
+                const card = document.createElement("div");
+                card.className = "song-card pending";
+                card.id = `card-${index}`;
+                
+                card.innerHTML = `
+                    <div class="song-thumb-wrapper">
+                        <div class="song-thumb" id="thumb-${index}" style="background-color: #111;"></div>
+                        <span class="song-status-badge" id="badge-${index}">Waiting</span>
+                    </div>
+                    <div class="song-info">
+                        <div class="song-title" title="${t.title}">${t.title}</div>
+                        <div class="song-artist" title="${t.artist}">${t.artist}</div>
+                    </div>
+                `;
+                grid.appendChild(card);
+            });
+        }
+
+        async function searchSong(query) {
+            // Try each instance until one succeeds
+            for (let i = 0; i < Math.min(instances.length, 6); i++) {
+                let instance = instances[i];
+                let url = `https://${instance}/api/v1/search?q=${encodeURIComponent(query)}&type=video`;
+                try {
+                    let controller = new AbortController();
+                    let timeoutId = setTimeout(() => controller.abort(), 6000);
+                    let res = await fetch(url, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    
+                    if (res.ok) {
+                        let data = await res.json();
+                        if (data && data.length > 0) {
+                            return { videoId: data[0].videoId, instance };
+                        }
+                    }
+                } catch (e) {
+                    // Try next instance
+                }
+            }
+            return null;
+        }
+
+        async function fetchImageAsBlob(videoId, instance) {
+            // Try direct YouTube first, fall back to Invidious image proxy if CORS fails
+            const urls = [
+                `https://img.youtube.com/vi/${videoId}/hqdefault.jpg`,
+                `https://${instance}/vi/${videoId}/hqdefault.jpg`,
+                `https://img.youtube.com/vi/${videoId}/0.jpg`
+            ];
+            
+            for (let url of urls) {
+                try {
+                    let controller = new AbortController();
+                    let timeoutId = setTimeout(() => controller.abort(), 8000);
+                    let res = await fetch(url, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    
+                    if (res.ok) {
+                        return await res.blob();
+                    }
+                } catch (e) {
+                    // Try next URL
+                }
+            }
+            return null;
+        }
+
+        async function processQueue() {
+            if (!isRunning) return;
+            
+            const maxConcurrency = 4;
+            while (activeDownloads < maxConcurrency && queue.length > 0) {
+                const task = queue.shift();
+                activeDownloads++;
+                runTask(task);
+            }
+        }
+
+        async function runTask(task) {
+            const { track, index } = task;
+            const card = document.getElementById(`card-${index}`);
+            const badge = document.getElementById(`badge-${index}`);
+            const thumb = document.getElementById(`thumb-${index}`);
+            
+            card.className = "song-card fetching";
+            badge.textContent = "Searching";
+            
+            log(`Searching YouTube for: "${track.query}"`, "info");
+            
+            let result = await searchSong(track.query);
+            if (result) {
+                const { videoId, instance } = result;
+                badge.textContent = "Downloading";
+                log(`Found videoId ${videoId} using ${instance}. Fetching thumbnail...`, "info");
+                
+                let blob = await fetchImageAsBlob(videoId, instance);
+                if (blob && blob.size > 1000) {
+                    const hash = await sha1(track.path);
+                    zip.file(`${hash}.jpg`, blob);
+                    
+                    // Update UI with the downloaded image
+                    const url = URL.createObjectURL(blob);
+                    thumb.style.backgroundImage = `url(${url})`;
+                    thumb.style.backgroundSize = "cover";
+                    thumb.style.backgroundPosition = "center";
+                    
+                    card.className = "song-card success";
+                    badge.textContent = "Done";
+                    successCount++;
+                    log(`Successfully downloaded art for: ${track.title}`, "success");
+                } else {
+                    card.className = "song-card error";
+                    badge.textContent = "Error";
+                    errorCount++;
+                    log(`Failed to fetch thumbnail for: ${track.title}`, "error");
+                }
+            } else {
+                card.className = "song-card error";
+                badge.textContent = "Not Found";
+                errorCount++;
+                log(`No search results for: ${track.title}`, "error");
+            }
+            
+            completedCount++;
+            activeDownloads--;
+            updateProgress();
+            
+            // Recurse to process the next item
+            processQueue();
+        }
+
+        function updateProgress() {
+            const percent = Math.round((completedCount / tracks.length) * 100);
+            document.getElementById("progressBar").style.width = `${percent}%`;
+            document.getElementById("progressText").textContent = `Completed: ${completedCount}/${tracks.length} (${percent}%)`;
+            document.getElementById("statusText").textContent = `Active: ${activeDownloads} | Success: ${successCount} | Failed: ${errorCount}`;
+            
+            if (completedCount === tracks.length) {
+                isRunning = false;
+                document.getElementById("statusText").textContent = `Finished! Success: ${successCount} | Failed: ${errorCount}`;
+                document.getElementById("downloadBtn").disabled = false;
+                log("All downloads completed! Generating ZIP...", "success");
+                saveZip(); // Auto-download ZIP!
+            }
+        }
+
+        async function startDownload() {
+            if (isRunning) return;
+            isRunning = true;
+            document.getElementById("startBtn").disabled = true;
+            
+            log("Loading Invidious instances...", "info");
+            await loadInstances();
+            
+            log("Starting queue...", "info");
+            queue = tracks.map((t, idx) => ({ track: t, index: idx }));
+            processQueue();
+        }
+
+        function saveZip() {
+            log("Packaging covers zip...", "info");
+            zip.generateAsync({ type: "blob" }).then((content) => {
+                const url = window.URL.createObjectURL(content);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = "youtube_covers.zip";
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
+                log("ZIP download triggered successfully!", "success");
+            });
+        }
+
+        window.onload = () => {
+            buildQueueUI();
+        };
+    </script>
+</body>
+</html>
