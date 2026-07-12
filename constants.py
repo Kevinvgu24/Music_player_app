@@ -12,5 +12,5 @@ COVER_CACHE = Path(__file__).with_name(".cover_cache")
 
 # Set to server URL to enable streaming mode, e.g. "http://192.168.1.50:8000"
 # Set to None or empty string to use local library offline
-SERVER_URL = None
+SERVER_URL = "http://192.168.1.245:8000"
 
