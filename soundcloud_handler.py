@@ -17,8 +17,23 @@ if sys.platform == "win32":
     SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
 
 def get_yt_dlp_cmd() -> list[str]:
-    if YT_DLP_PATH.exists():
-        return [str(YT_DLP_PATH)]
+    # Check local yt-dlp (no extension script or binary)
+    local_script = Path(__file__).parent / "yt-dlp"
+    if local_script.exists():
+        try:
+            with open(local_script, "rb") as f:
+                header = f.read(10)
+            if header.startswith(b"#!"):
+                return [sys.executable, str(local_script)]
+        except Exception:
+            pass
+        return [str(local_script)]
+
+    # Check local yt-dlp.exe
+    local_exe = Path(__file__).parent / "yt-dlp.exe"
+    if local_exe.exists():
+        return [str(local_exe)]
+
     return ["yt-dlp.exe" if sys.platform == "win32" else "yt-dlp"]
 
 def search_soundcloud(query: str, limit: int = 15) -> list[dict]:

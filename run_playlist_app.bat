@@ -10,6 +10,11 @@ cd /d "%APP_DIR%"
 echo ---- %DATE% %TIME% ---- >> "%LOG_FILE%"
 echo Launching Playlist Offline >> "%LOG_FILE%"
 
+if exist "%APP_DIR%.venv\Scripts\python.exe" (
+    "%APP_DIR%.venv\Scripts\python.exe" "%APP_FILE%" %* >> "%LOG_FILE%" 2>&1
+    exit /b %ERRORLEVEL%
+)
+
 if exist "%VENDOR_DIR%\PySide6" (
     set "PYTHONPATH=%VENDOR_DIR%;%PYTHONPATH%"
     python "%APP_FILE%" %* >> "%LOG_FILE%" 2>&1

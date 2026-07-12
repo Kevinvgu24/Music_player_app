@@ -4,6 +4,8 @@ import hashlib
 import random
 import sys
 from pathlib import Path
+import urllib.parse
+
 
 import json
 import subprocess
@@ -144,7 +146,11 @@ class PlayerWindow(QMainWindow):
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(1020, 620)
         self.resize(1200, 720)
-        self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
+        icon_path = Path(__file__).parent / "app_icon.ico"
+        if icon_path.exists():
+            self.setWindowIcon(QIcon(str(icon_path)))
+        else:
+            self.setWindowIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_MediaPlay))
 
         self._build_actions()
         self._build_ui()
@@ -262,6 +268,8 @@ class PlayerWindow(QMainWindow):
         self.hero_play_button.setText(self.tr("play_list"))
         self.hero_rescan_button.setText(self.tr("rescan"))
         self.hero_folder_button.setText(self.tr("choose_folder"))
+        if hasattr(self, "hero_sync_button"):
+            self.hero_sync_button.setText(self.tr("sync_server_btn"))
         self.language_button.setText(self.tr("language_button"))
         self.track_table.setHorizontalHeaderLabels(
             [
@@ -462,9 +470,20 @@ class PlayerWindow(QMainWindow):
         self.hero_folder_button.setObjectName("secondaryButton")
         self.hero_folder_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.hero_folder_button.clicked.connect(self.choose_library)
+        
+        self.hero_sync_button = QPushButton()
+        self.hero_sync_button.setObjectName("secondaryButton")
+        self.hero_sync_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon))
+        self.hero_sync_button.clicked.connect(self.sync_library_to_server)
+        
+        from constants import SERVER_URL
+        if not SERVER_URL:
+            self.hero_sync_button.hide()
+            
         hero_actions.addWidget(self.hero_play_button)
         hero_actions.addWidget(self.hero_rescan_button)
         hero_actions.addWidget(self.hero_folder_button)
+        hero_actions.addWidget(self.hero_sync_button)
         hero_actions.addStretch(1)
 
         hero_text.addWidget(self.hero_caption)
@@ -883,10 +902,15 @@ class PlayerWindow(QMainWindow):
             "xesam:artist": [track.artist],
             "xesam:album": self.display_album(track.album),
             "xesam:url": (
-                self.online_stream_urls.get(str(track.path), "")
-                if str(track.path).startswith("/online/")
-                else QUrl.fromLocalFile(str(track.path)).toString()
+                self.online_stream_urls.get(track.path.as_posix(), "")
+                if track.path.as_posix().startswith("/online/")
+                else (
+                    f"{SERVER_URL}/audio/{urllib.parse.quote(track.path.as_posix()[8:])}"
+                    if SERVER_URL and track.path.as_posix().startswith("/server/")
+                    else QUrl.fromLocalFile(str(track.path)).toString()
+                )
             ),
+
         }
         duration = self.player.duration()
         if duration > 0:
@@ -916,7 +940,35 @@ class PlayerWindow(QMainWindow):
             self.reload_library()
 
     def reload_library(self) -> None:
-        self.tracks = scan_library(self.library_root)
+        from constants import SERVER_URL
+        if SERVER_URL:
+            import urllib.request
+            import json
+            try:
+                self.status.setText("Đang tải danh sách nhạc từ Server..." if self.language == "vi" else "Loading track list from Server...")
+                with urllib.request.urlopen(f"{SERVER_URL}/tracks", timeout=5) as response:
+                    raw_tracks = json.loads(response.read().decode("utf-8"))
+                
+                self.tracks = []
+                for t in raw_tracks:
+                    self.tracks.append(
+                        Track(
+                            path=Path(t["path"]),
+                            title=t["title"],
+                            folder=t["folder"],
+                            artist=t["artist"],
+                            album=t["album"],
+                            art_path=None
+                        )
+                    )
+                self.status.setText("Tải danh sách nhạc thành công!" if self.language == "vi" else "Track list loaded successfully!")
+            except Exception as e:
+                self.tracks = []
+                self.status.setText(f"Lỗi kết nối Server: {e}")
+                QMessageBox.warning(self, "Lỗi kết nối Server", f"Không kết nối được tới Server nhạc: {e}")
+        else:
+            self.tracks = scan_library(self.library_root)
+            
         self.current_index = -1
         self.update_path_label()
         self._detect_new_tracks()
@@ -924,6 +976,7 @@ class PlayerWindow(QMainWindow):
         self.populate_albums()
         self.apply_filter(switch_page=False)
         self.emit_mpris_properties("Metadata", "CanPlay", "CanGoNext", "CanGoPrevious")
+
 
     def _detect_new_tracks(self) -> None:
         """Compare current tracks to daily-reset cache; show notification if new artists/tracks found."""
@@ -995,7 +1048,12 @@ class PlayerWindow(QMainWindow):
             self.new_tracks_card.clear()
 
     def update_path_label(self) -> None:
-        self.path_label.setText(self.tr("library_path", path=self.library_root))
+        from constants import SERVER_URL
+        if SERVER_URL:
+            self.path_label.setText(self.tr("library_path", path=f"Server: {SERVER_URL}"))
+        else:
+            self.path_label.setText(self.tr("library_path", path=self.library_root))
+
 
     def populate_folders(self) -> None:
         artist_query = search_text(self.artist_search.text().strip())
@@ -1004,16 +1062,17 @@ class PlayerWindow(QMainWindow):
 
         self.folder_list.blockSignals(True)
         self.folder_list.clear()
-        local_tracks = [t for t in self.tracks if not str(t.path).startswith("/online/")]
+        local_tracks = [t for t in self.tracks if not t.path.as_posix().startswith("/online/")]
         all_item = QListWidgetItem(self.tr("all_artists", count=len(local_tracks)))
         all_item.setData(Qt.ItemDataRole.UserRole, "")
         self.folder_list.addItem(all_item)
 
         folders: dict[str, int] = {}
         for track in self.tracks:
-            if str(track.path).startswith("/online/"):
+            if track.path.as_posix().startswith("/online/"):
                 continue
             folders[track.artist] = folders.get(track.artist, 0) + 1
+
 
         next_row = 0
         for folder, count in sorted(folders.items(), key=lambda item: search_text(item[0])):
@@ -1045,7 +1104,7 @@ class PlayerWindow(QMainWindow):
 
         album_counts: dict[str, int] = {}
         for track in self.tracks:
-            if str(track.path).startswith("/online/"):
+            if track.path.as_posix().startswith("/online/"):
                 continue
             if selected_artist and track.artist != selected_artist:
                 continue
@@ -1079,7 +1138,7 @@ class PlayerWindow(QMainWindow):
         selected_album = album_item.data(Qt.ItemDataRole.UserRole) if album_item else ""
 
         def matches(track: Track) -> bool:
-            if str(track.path).startswith("/online/"):
+            if track.path.as_posix().startswith("/online/"):
                 return False
             if selected_artist and track.artist != selected_artist:
                 return False
@@ -1151,7 +1210,7 @@ class PlayerWindow(QMainWindow):
         cover.setObjectName("trackTitleCover")
         cover.setFixedSize(46, 46)
         cover.setScaledContents(True)
-        cover.setPixmap(self.safe_track_pixmap(track, 46, allow_extract=False))
+        cover.setPixmap(self.safe_track_pixmap(track, 46, allow_extract=True))
         cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         text_layout = QVBoxLayout()
@@ -1281,14 +1340,33 @@ class PlayerWindow(QMainWindow):
         custom_path = get_custom_cover_path(track.path)
         if custom_path:
             return custom_path
-        if track.art_path and track.art_path.exists():
+        
+        path_str = str(track.path)
+        is_server = path_str.startswith("/server/")
+        
+        if not is_server and track.art_path and track.art_path.exists():
             return track.art_path
+            
         cached = embedded_art_cache_path(track.path)
         if cached.exists():
             return cached
-        if allow_extract:
+            
+        if is_server:
+            from constants import SERVER_URL
+            if SERVER_URL:
+                if not hasattr(self, "_in_progress_covers"):
+                    self._in_progress_covers = set()
+                if path_str not in self._in_progress_covers:
+                    self._in_progress_covers.add(path_str)
+                    from urllib.parse import quote
+                    relative_part = path_str[len("/server/"):]
+                    cover_url = f"{SERVER_URL}/cover/{quote(relative_part)}"
+                    QTimer.singleShot(0, lambda: self.async_cache_online_art(cover_url, cached))
+                    
+        if allow_extract and not is_server:
             return extract_embedded_art(track.path)
         return None
+
 
 
     def art_key(self, track: Track, allow_extract: bool = False) -> str:
@@ -1332,7 +1410,58 @@ class PlayerWindow(QMainWindow):
             self.cover_image.setPixmap(QPixmap())
             return
         self.cover_image.setText("")
-        self.cover_image.setPixmap(self.safe_track_pixmap(track, 100, allow_extract=True))
+        pixmap = self.safe_track_pixmap(track, 100, allow_extract=True)
+        self.cover_image.setPixmap(pixmap)
+        
+        # Synchronize track list cover icon immediately
+        if hasattr(self, "visible_tracks") and track in self.visible_tracks:
+            try:
+                row = self.visible_tracks.index(track)
+                widget = self.track_table.cellWidget(row, 0)
+                if widget:
+                    cover_label = widget.findChild(QLabel, "trackTitleCover")
+                    if cover_label:
+                        cover_label.setPixmap(self.safe_track_pixmap(track, 46, allow_extract=True))
+            except Exception:
+                pass
+
+    def register_extracted_cover(self, track: Track) -> None:
+        # Clear the old default/fallback pixmap caches for this track
+        keys_to_remove = [k for k in self.pixmap_cache.keys() if k[0].startswith("default:") and track.title in k[0]]
+        for k in keys_to_remove:
+            self.pixmap_cache.pop(k, None)
+            
+        keys_to_remove_art = [k for k in self.art_cache.keys() if k[0].startswith("default:") and track.title in k[0]]
+        for k in keys_to_remove_art:
+            self.art_cache.pop(k, None)
+            
+        # Update the cover image in the player bar (bottom bar)
+        self.set_bottom_cover(track)
+        
+        # Update the cover image in the side player info
+        self.set_cover_image(track)
+        
+        # Update the theme/background colors of the app
+        self.update_dynamic_background(track)
+        
+        # Update the Now Playing window components
+        if getattr(self, "now_playing_window", None) is not None:
+            try:
+                self.now_playing_window.update_track(track)
+            except Exception:
+                pass
+        
+        # Update the cover image in the track table row
+        if hasattr(self, "visible_tracks") and track in self.visible_tracks:
+            try:
+                row = self.visible_tracks.index(track)
+                widget = self.track_table.cellWidget(row, 0)
+                if widget:
+                    cover_label = widget.findChild(QLabel, "trackTitleCover")
+                    if cover_label:
+                        cover_label.setPixmap(self.safe_track_pixmap(track, 46, allow_extract=True))
+            except Exception:
+                pass
 
     def set_bottom_cover(self, track: Track | None) -> None:
         if track is None:
@@ -1473,7 +1602,7 @@ class PlayerWindow(QMainWindow):
         if manual:
             self.auto_paused_by_other_media = False
         # Update or clear current_online_track
-        if str(track.path).startswith("/online/"):
+        if track.path.as_posix().startswith("/online/"):
             self.current_online_track = track
         else:
             self.current_online_track = None
@@ -1482,7 +1611,7 @@ class PlayerWindow(QMainWindow):
         self.last_track = track
         self.paused_position = 0
         self.resume_token += 1
-        path_str = str(track.path)
+        path_str = track.path.as_posix()
         if path_str.startswith("/online/"):
             stream_url = self.online_stream_urls.get(path_str)
             if stream_url:
@@ -1491,9 +1620,17 @@ class PlayerWindow(QMainWindow):
             else:
                 self.resolve_and_play_online(track)
                 return
+        elif path_str.startswith("/server/"):
+            from constants import SERVER_URL
+            from urllib.parse import quote
+            relative_part = path_str[len("/server/"):]
+            stream_url = f"{SERVER_URL}/audio/{quote(relative_part)}"
+            self.player.setSource(QUrl(stream_url))
+            self.player.play()
         else:
             self.player.setSource(QUrl.fromLocalFile(path_str))
             self.player.play()
+
         self.update_now_playing(track)
         self.set_cover_image(track)
         self.show_now_playing(track)
@@ -1527,7 +1664,8 @@ class PlayerWindow(QMainWindow):
         
         self.splitter_animation = QVariantAnimation(self)
         self.splitter_animation.setStartValue(current_np_width)
-        self.splitter_animation.setEndValue(320)
+        target_width = getattr(self, "preferred_now_playing_width", 320)
+        self.splitter_animation.setEndValue(target_width)
         self.splitter_animation.setDuration(350)
         self.splitter_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
         
@@ -1653,6 +1791,10 @@ class PlayerWindow(QMainWindow):
                 "accent": accent,
             }
 
+        if not self.isVisible():
+            self.animate_colors(1.0, self.current_colors, target_colors)
+            return
+
         if getattr(self, "bg_animation", None) is not None:
             self.bg_animation.stop()
 
@@ -1711,6 +1853,54 @@ class PlayerWindow(QMainWindow):
             f"    border: 1px solid {current_bg_border.name()};"
             f"}}"
         )
+        
+        # Dynamically theme hero buttons in sidebar/playlist
+        accent_hex = current_accent.name()
+        h, s, v, a = current_accent.getHsv()
+        v_hover = min(255, int(v * 1.15)) if v < 220 else max(0, int(v * 0.85))
+        accent_hover = QColor.fromHsv(h, s, v_hover, a).name()
+        v_pressed = max(0, int(v * 0.80))
+        accent_pressed = QColor.fromHsv(h, s, v_pressed, a).name()
+        
+        self.hero_play_button.setStyleSheet(f"""
+            QPushButton#primaryButton {{
+                background: {accent_hex};
+                color: #ffffff;
+                border: 1px solid {accent_hex};
+                border-radius: 20px;
+                padding: 10px 18px;
+                min-height: 20px;
+                font-weight: 850;
+            }}
+            QPushButton#primaryButton:hover {{
+                background: {accent_hover};
+                border-color: {accent_hover};
+            }}
+            QPushButton#primaryButton:pressed {{
+                background: {accent_pressed};
+                border-color: {accent_pressed};
+            }}
+        """)
+        
+        secondary_hover_style = f"""
+            QPushButton#secondaryButton {{
+                background: rgba(255, 255, 255, 0.06);
+                color: #ffffff;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 20px;
+                padding: 10px 18px;
+                min-height: 20px;
+                font-weight: 650;
+            }}
+            QPushButton#secondaryButton:hover {{
+                background: rgba(255, 255, 255, 0.10);
+                border-color: {accent_hex};
+                color: {accent_hex};
+            }}
+        """
+        self.hero_rescan_button.setStyleSheet(secondary_hover_style)
+        self.hero_folder_button.setStyleSheet(secondary_hover_style)
+
         if hasattr(self, "new_tracks_card"):
             self.new_tracks_card.set_accent(current_accent)
         if hasattr(self, "cover_wave"):
@@ -1724,7 +1914,7 @@ class PlayerWindow(QMainWindow):
 
     def highlight_track(self, track: Track) -> None:
         # Online/SoundCloud tracks are not in the local library table — skip entirely
-        if str(track.path).startswith("/online/"):
+        if track.path.as_posix().startswith("/online/"):
             return
         
         row = self.visible_row_for_track(track)
@@ -1823,16 +2013,25 @@ class PlayerWindow(QMainWindow):
         self.last_track = track
 
         target_position = max(self.paused_position, self.player.position(), 0)
-        is_online = str(track.path).startswith("/online/")
-        if is_online:
-            track_url = self.online_stream_urls.get(str(track.path), "")
+        path_str = track.path.as_posix()
+        if path_str.startswith("/online/"):
+            track_url = self.online_stream_urls.get(path_str, "")
+            current_source = self.player.source().toString()
+            if current_source != track_url:
+                self.player.setSource(QUrl(track_url))
+        elif path_str.startswith("/server/"):
+            from constants import SERVER_URL
+            from urllib.parse import quote
+            relative_part = path_str[len("/server/"):]
+            track_url = f"{SERVER_URL}/audio/{quote(relative_part)}"
             current_source = self.player.source().toString()
             if current_source != track_url:
                 self.player.setSource(QUrl(track_url))
         else:
             source_path = Path(self.player.source().toLocalFile()) if not self.player.source().isEmpty() else None
             if source_path != track.path:
-                self.player.setSource(QUrl.fromLocalFile(str(track.path)))
+                self.player.setSource(QUrl.fromLocalFile(path_str))
+
 
         self.update_now_playing(track)
         self.set_cover_image(track)
@@ -1852,11 +2051,19 @@ class PlayerWindow(QMainWindow):
         if self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
             return
 
-        if str(track.path).startswith("/online/"):
-            track_url = self.online_stream_urls.get(str(track.path), "")
+        path_str = track.path.as_posix()
+        if path_str.startswith("/online/"):
+            track_url = self.online_stream_urls.get(path_str, "")
+            self.player.setSource(QUrl(track_url))
+        elif path_str.startswith("/server/"):
+            from constants import SERVER_URL
+            from urllib.parse import quote
+            relative_part = path_str[len("/server/"):]
+            track_url = f"{SERVER_URL}/audio/{quote(relative_part)}"
             self.player.setSource(QUrl(track_url))
         else:
-            self.player.setSource(QUrl.fromLocalFile(str(track.path)))
+            self.player.setSource(QUrl.fromLocalFile(path_str))
+
         self.player.play()
         if position > 0:
             QTimer.singleShot(120, lambda pos=position: self.player.setPosition(pos))
@@ -2062,6 +2269,12 @@ class PlayerWindow(QMainWindow):
         event.ignore()
         self.show_mini_player()
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        if hasattr(self, "now_playing_window") and self.now_playing_window is not None:
+            max_width = max(300, self.width() // 2)
+            self.now_playing_window.setMaximumWidth(max_width)
+
     def ensure_mini_player(self):
         if self.mini_player is None:
             from mini_player import MiniPlayerWidget
@@ -2132,12 +2345,32 @@ class PlayerWindow(QMainWindow):
         set_bg_action = menu.addAction(self.tr("context_menu_set_bg"))
         set_bg_action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView))
         
+        path_str = track.path.as_posix()
+        is_server = path_str.startswith("/server/")
+        from constants import SERVER_URL
+        
+        download_action = None
+        upload_action = None
+        
+        if is_server:
+            if SERVER_URL:
+                download_action = menu.addAction(self.tr("context_menu_download_server"))
+                download_action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown))
+        else:
+            if SERVER_URL:
+                upload_action = menu.addAction(self.tr("context_menu_upload_server"))
+                upload_action.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
+                
         action = menu.exec(self.track_table.viewport().mapToGlobal(pos))
         if action == play_action:
             self.current_index = self.tracks.index(track)
             self.play_track(track)
         elif action == set_bg_action:
             self.show_cover_art_selector(track)
+        elif download_action and action == download_action:
+            self.download_server_track(track)
+        elif upload_action and action == upload_action:
+            self.upload_server_track(track)
 
     def show_cover_art_selector(self, track: Track) -> None:
         from art_selector import CoverArtSelectorDialog
@@ -2536,6 +2769,17 @@ class PlayerWindow(QMainWindow):
         from PySide6.QtNetwork import QNetworkReply
         reply.deleteLater()
         
+        # Discard from in-progress covers
+        if hasattr(self, "_in_progress_covers"):
+            for path_str in list(self._in_progress_covers):
+                from library import embedded_art_cache_path
+                try:
+                    if embedded_art_cache_path(Path(path_str)).resolve().as_posix() == target_path.resolve().as_posix():
+                        self._in_progress_covers.discard(path_str)
+                        break
+                except Exception:
+                    pass
+        
         if reply.error() == QNetworkReply.NetworkError.NoError:
             data = reply.readAll().data()
             try:
@@ -2547,8 +2791,7 @@ class PlayerWindow(QMainWindow):
                     self.pixmap_cache.clear()
                     self.art_cache.clear()
                     
-                    self.set_cover_image(curr)
-                    self.set_bottom_cover(curr)
+                    self.register_extracted_cover(curr)
                     self.now_playing_window.update_track(curr)
                     if getattr(self, "mini_player", None) is not None:
                         self.mini_player.update_track_info()
@@ -2556,6 +2799,7 @@ class PlayerWindow(QMainWindow):
                 print(f"Error saving cached online art: {e}", flush=True)
         else:
             print(f"Network error caching art: {reply.errorString()}", flush=True)
+
 
     def play_online_track(self, title: str, artist: str, virtual_path: Path, stream_url: str) -> None:
         self.soundcloud_table.setEnabled(True)
@@ -2717,3 +2961,277 @@ class PlayerWindow(QMainWindow):
                 btn.setStyleSheet("color: #ef4444; font-weight: bold; margin: 20px 8px;")
                 btn.setEnabled(True)
                 QMessageBox.warning(self, self.tr("download_failed").split(":")[0], f"{self.tr('download_failed').format(title=error_msg)}")
+
+    def download_server_track(self, track: Track) -> None:
+        from constants import SERVER_URL
+        if not SERVER_URL:
+            return
+            
+        path_str = track.path.as_posix()
+        if not path_str.startswith("/server/"):
+            return
+            
+        relative_part = path_str[len("/server/"):]
+        
+        filename = Path(relative_part).name
+        def sanitize_dir(name):
+            return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '.')).strip()
+            
+        artist_dir = sanitize_dir(track.artist) or "Library"
+        album_dir = sanitize_dir(track.album) or "Singles"
+        dest_dir = self.library_root / artist_dir / album_dir
+        dest_path = dest_dir / filename
+        
+        if dest_path.exists():
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self,
+                self.tr("download_exists_title"),
+                self.tr("download_exists_msg").format(title=track.title, artist=track.artist),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
+                
+        self.status.setText(self.tr("download_start", title=track.title))
+        
+        def run():
+            import urllib.request
+            import urllib.parse
+            try:
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                audio_url = f"{SERVER_URL}/audio/{urllib.parse.quote(relative_part)}"
+                
+                with urllib.request.urlopen(audio_url, timeout=15) as response:
+                    with open(dest_path, "wb") as f:
+                        f.write(response.read())
+                        
+                try:
+                    cover_url = f"{SERVER_URL}/cover/{urllib.parse.quote(relative_part)}"
+                    cover_dest = dest_dir / "cover.jpg"
+                    if not cover_dest.exists():
+                        with urllib.request.urlopen(cover_url, timeout=3) as cover_resp:
+                            with open(cover_dest, "wb") as cf:
+                                cf.write(cover_resp.read())
+                except Exception:
+                    pass
+                    
+                QTimer.singleShot(0, lambda: self.on_server_download_success(track))
+            except Exception as e:
+                QTimer.singleShot(0, lambda err=str(e): self.on_server_download_failed(track, err))
+                
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
+    def on_server_download_success(self, track: Track) -> None:
+        self.status.setText(self.tr("download_success", title=track.title))
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            self.tr("download_success", title="").replace(":", "").strip(),
+            self.tr("download_success_toast", title=track.title)
+        )
+        self.reload_library()
+
+    def on_server_download_failed(self, track: Track, error_msg: str) -> None:
+        self.status.setText(self.tr("download_failed", title=track.title))
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            self.tr("download_failed", title="").split(":")[0],
+            self.tr("download_failed", title=f"{track.title} ({error_msg})")
+        )
+
+    def upload_server_track(self, track: Track) -> None:
+        from constants import SERVER_URL
+        if not SERVER_URL:
+            return
+            
+        path_str = track.path.as_posix()
+        if path_str.startswith("/server/") or path_str.startswith("/online/"):
+            return
+            
+        if not track.path.exists():
+            return
+            
+        self.status.setText(self.tr("upload_start", title=track.title))
+        
+        def run():
+            import uuid
+            import urllib.request
+            try:
+                url = f"{SERVER_URL}/upload"
+                boundary = uuid.uuid4().hex
+                parts = []
+                
+                fields = {
+                    "artist": track.artist,
+                    "album": track.album
+                }
+                for name, value in fields.items():
+                    parts.append(f"--{boundary}".encode('utf-8'))
+                    parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
+                    parts.append(b'')
+                    parts.append(str(value).encode('utf-8'))
+                    
+                parts.append(f"--{boundary}".encode('utf-8'))
+                filename = track.path.name
+                parts.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode('utf-8'))
+                parts.append(b'Content-Type: application/octet-stream')
+                parts.append(b'')
+                with open(track.path, 'rb') as f:
+                    parts.append(f.read())
+                    
+                parts.append(f"--{boundary}--".encode('utf-8'))
+                parts.append(b'')
+                
+                body = b'\r\n'.join(parts)
+                req = urllib.request.Request(url, data=body)
+                req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+                req.add_header('Content-Length', str(len(body)))
+                
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    response.read()
+                    
+                QTimer.singleShot(0, lambda: self.on_server_upload_success(track))
+            except Exception as e:
+                QTimer.singleShot(0, lambda err=str(e): self.on_server_upload_failed(track, err))
+                
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
+    def on_server_upload_success(self, track: Track) -> None:
+        self.status.setText(self.tr("upload_success", title=track.title))
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.information(
+            self,
+            self.tr("upload_success", title="").replace(":", "").strip(),
+            self.tr("upload_success", title=track.title)
+        )
+        self.reload_library()
+
+    def on_server_upload_failed(self, track: Track, error_msg: str) -> None:
+        self.status.setText(self.tr("upload_failed", title=track.title, error=error_msg))
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            self.tr("upload_failed", title="", error="").replace("():", "").strip(),
+            self.tr("upload_failed", title=track.title, error=error_msg)
+        )
+
+    def sync_library_to_server(self) -> None:
+        from constants import SERVER_URL
+        if not SERVER_URL:
+            return
+            
+        if not self.library_root.exists():
+            return
+            
+        self.hero_sync_button.setEnabled(False)
+        self.status.setText(self.tr("sync_start"))
+        
+        def run():
+            import uuid
+            import urllib.request
+            from library import scan_library
+            try:
+                # 1. Gather all relative paths of tracks currently on the server
+                server_rel_paths = set()
+                for track in self.tracks:
+                    path_str = track.path.as_posix()
+                    if path_str.startswith("/server/"):
+                        server_rel_paths.add(path_str[len("/server/"):].lower())
+                        
+                # 2. Scan local tracks
+                local_tracks = scan_library(self.library_root)
+                
+                # 3. Identify new tracks that aren't on the server
+                tracks_to_upload = []
+                for local_track in local_tracks:
+                    try:
+                        rel_path = local_track.path.relative_to(self.library_root).as_posix()
+                        if rel_path.lower() not in server_rel_paths:
+                            tracks_to_upload.append(local_track)
+                    except ValueError:
+                        pass
+                        
+                if not tracks_to_upload:
+                    QTimer.singleShot(0, lambda: self.on_sync_success(0))
+                    return
+                    
+                # 4. Upload each new track sequentially
+                uploaded_count = 0
+                for i, local_track in enumerate(tracks_to_upload):
+                    msg = f"Đồng bộ: Tải lên {i+1}/{len(tracks_to_upload)} - {local_track.title}..." if self.language == "vi" else f"Sync: Uploading {i+1}/{len(tracks_to_upload)} - {local_track.title}..."
+                    QTimer.singleShot(0, lambda m=msg: self.status.setText(m))
+                    
+                    url = f"{SERVER_URL}/upload"
+                    boundary = uuid.uuid4().hex
+                    parts = []
+                    
+                    fields = {
+                        "artist": local_track.artist,
+                        "album": local_track.album
+                    }
+                    for name, value in fields.items():
+                        parts.append(f"--{boundary}".encode('utf-8'))
+                        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
+                        parts.append(b'')
+                        parts.append(str(value).encode('utf-8'))
+                        
+                    parts.append(f"--{boundary}".encode('utf-8'))
+                    filename = local_track.path.name
+                    parts.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode('utf-8'))
+                    parts.append(b'Content-Type: application/octet-stream')
+                    parts.append(b'')
+                    with open(local_track.path, 'rb') as f:
+                        parts.append(f.read())
+                        
+                    parts.append(f"--{boundary}--".encode('utf-8'))
+                    parts.append(b'')
+                    
+                    body = b'\r\n'.join(parts)
+                    req = urllib.request.Request(url, data=body)
+                    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+                    req.add_header('Content-Length', str(len(body)))
+                    
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        response.read()
+                        
+                    uploaded_count += 1
+                    
+                QTimer.singleShot(0, lambda cnt=uploaded_count: self.on_sync_success(cnt))
+            except Exception as e:
+                QTimer.singleShot(0, lambda err=str(e): self.on_sync_failed(err))
+                
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
+    def on_sync_success(self, count: int) -> None:
+        self.hero_sync_button.setEnabled(True)
+        from PySide6.QtWidgets import QMessageBox
+        if count > 0:
+            self.status.setText(self.tr("sync_complete", count=count))
+            QMessageBox.information(
+                self,
+                self.tr("sync_server_btn"),
+                self.tr("sync_complete", count=count)
+            )
+            self.reload_library()
+        else:
+            self.status.setText(self.tr("sync_no_new"))
+            QMessageBox.information(
+                self,
+                self.tr("sync_server_btn"),
+                self.tr("sync_no_new")
+            )
+
+    def on_sync_failed(self, error_msg: str) -> None:
+        self.hero_sync_button.setEnabled(True)
+        self.status.setText(self.tr("sync_failed", error=error_msg))
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            self.tr("sync_failed", error="").replace(":", "").strip(),
+            self.tr("sync_failed", error=error_msg)
+        )

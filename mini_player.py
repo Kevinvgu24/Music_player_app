@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QLabel,
     QPushButton,
+    QToolButton,
     QGraphicsDropShadowEffect,
     QApplication,
 )
@@ -80,18 +81,6 @@ class MiniPlayerWidget(QWidget):
                 color: #b3c0d1;
                 font-size: 11px;
             }}
-            QPushButton#controlBtn {{
-                background: transparent;
-                border: none;
-                color: #ffffff;
-                font-size: 20px;
-            }}
-            QPushButton#controlBtn:hover {{
-                color: {accent_color};
-            }}
-            QPushButton#controlBtn:pressed {{
-                color: #ffffff;
-            }}
             QLabel#musicNote {{
                 color: rgba(255, 255, 255, 0.5);
                 font-size: 14px;
@@ -148,18 +137,24 @@ class MiniPlayerWidget(QWidget):
         btn_row.setSpacing(22)
         btn_row.setAlignment(Qt.AlignmentFlag.AlignLeft)
         
-        self.prev_btn = QPushButton("⏮")
+        self.prev_btn = QToolButton()
+        self.prev_btn.setText("|◀")
         self.prev_btn.setObjectName("controlBtn")
+        self.prev_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.prev_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.prev_btn.clicked.connect(self.main_window.previous_track)
         
-        self.play_btn = QPushButton("▶")
+        self.play_btn = QToolButton()
+        self.play_btn.setText("▶")
         self.play_btn.setObjectName("controlBtn")
+        self.play_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.play_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.play_btn.clicked.connect(self.main_window.toggle_play)
         
-        self.next_btn = QPushButton("⏭")
+        self.next_btn = QToolButton()
+        self.next_btn.setText("▶|")
         self.next_btn.setObjectName("controlBtn")
+        self.next_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.next_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.next_btn.clicked.connect(self.main_window.next_track)
         
@@ -367,24 +362,34 @@ class MiniPlayerWidget(QWidget):
                 color: rgba(255, 255, 255, 0.75);
                 font-size: 11px;
             }}
-            QPushButton#controlBtn {{
+        """)
+        
+        # Style control buttons directly to completely override default system and global stylesheets
+        btn_style = f"""
+            QToolButton {{
                 background: transparent;
+                background-color: transparent;
                 border: none;
                 color: #ffffff;
                 font-size: 20px;
+                font-weight: bold;
+                padding: 4px;
             }}
-            QPushButton#controlBtn:hover {{
+            QToolButton:hover {{
                 color: {accent.name()};
             }}
-            QPushButton#controlBtn:pressed {{
-                color: #ffffff;
+            QToolButton:pressed {{
+                color: #b3b3b3;
             }}
-        """)
+        """
+        self.prev_btn.setStyleSheet(btn_style)
+        self.play_btn.setStyleSheet(btn_style)
+        self.next_btn.setStyleSheet(btn_style)
 
     def update_play_state(self):
         from PySide6.QtMultimedia import QMediaPlayer
         playing = self.main_window.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
-        self.play_btn.setText("⏸" if playing else "▶")
+        self.play_btn.setText("||" if playing else "▶")
 
     def start_drag(self, event: QMouseEvent) -> None:
         self.user_positioned = True

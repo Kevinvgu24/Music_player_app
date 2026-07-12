@@ -1,0 +1,12 @@
+version: '3.8'
+
+services:
+  music-server:
+    build: .
+    container_name: playlist-music-server
+    ports:
+      - "8000:8000"
+    volumes:
+      # Thay đổi đường dẫn bên trái để trỏ đến thư mục nhạc trên máy của bạn
+      - ./music:/music
+    restart: unless-stopped

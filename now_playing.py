@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation
-from PySide6.QtGui import QColor, QConicalGradient, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap
-from PySide6.QtMultimedia import QMediaPlayer
+from PySide6.QtGui import QColor, QConicalGradient, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
+from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 from constants import APP_NAME
-from library import Track
+from library import Track, embedded_art_cache_path, embedded_no_art_path
 from utils import format_ms
 from widgets import SeekSlider, MusicVisualizer
 
@@ -236,7 +236,14 @@ class NowPlayingWindow(QWidget):
         self.bg_animation = None
         self.setObjectName("nowPlayingWindow")
         self.setWindowTitle(APP_NAME)
-        self.setFixedWidth(320)
+        self.setMinimumWidth(300)
+
+        # QVideoSink for manual rendering of video frames as blurred background
+        self.video_sink = QVideoSink(self)
+        self.video_sink.videoFrameChanged.connect(self.on_video_frame_changed)
+        self.window.player.setVideoOutput(self.video_sink)
+        self.raw_video_frame = None
+        self.scaled_video_frame = None
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 18, 15, 24)
@@ -311,6 +318,157 @@ class NowPlayingWindow(QWidget):
 
         layout.addStretch(1)
 
+    def on_video_frame_changed(self) -> None:
+        frame = self.video_sink.videoFrame()
+        if not frame or not frame.isValid():
+            return
+        image = frame.toImage()
+        if not image.isNull():
+            self.raw_video_frame = image
+            # Apply a light blur by downsampling to 160x160 and then upsampling
+            blurred = self.raw_video_frame.scaled(
+                160, 160,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.scaled_video_frame = blurred.scaled(
+                self.width(), self.height(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.update()
+            
+            # Dynamically grab the first valid non-black frame as the disc's thumbnail
+            if getattr(self, "has_video_thumbnail", False) is False:
+                # Check if it's not a black frame (using lightness threshold of 40)
+                is_black = True
+                w, h = image.width(), image.height()
+                if w > 0 and h > 0:
+                    samples = [
+                        image.pixelColor(w // 4, h // 4),
+                        image.pixelColor(w // 2, h // 4),
+                        image.pixelColor(w // 2, h // 2),
+                        image.pixelColor(w // 4, h // 2),
+                        image.pixelColor(3 * w // 4, 3 * h // 4)
+                    ]
+                    for c in samples:
+                        if c.lightness() > 40:
+                            is_black = False
+                            break
+                
+                if not is_black:
+                    self.has_video_thumbnail = True
+                    track = self.window.current_track()
+                    if track:
+                        # Save image to cache so all views use the same image!
+                        cache_path = embedded_art_cache_path(track.path)
+                        try:
+                            cache_path.parent.mkdir(exist_ok=True)
+                            image.save(str(cache_path), "JPG")
+                            no_art_path = embedded_no_art_path(track.path)
+                            if no_art_path.exists():
+                                try:
+                                    no_art_path.unlink()
+                                except OSError:
+                                    pass
+                            # Register cover to update UI and other caches
+                            self.window.register_extracted_cover(track)
+                        except Exception as e:
+                            print(f"Failed to cache captured video thumbnail: {e}")
+                    
+                    pixmap = QPixmap.fromImage(image)
+                    size = self.disc.width()
+                    if size <= 0:
+                        size = 280
+                    scaled = pixmap.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+                    if scaled.width() != size or scaled.height() != size:
+                        x = max(0, (scaled.width() - size) // 2)
+                        y = max(0, (scaled.height() - size) // 2)
+                        scaled = scaled.copy(x, y, size, size)
+                    self.disc.set_disc(scaled, self.current_accent)
+
+    def paintEvent(self, event) -> None:
+        # First, draw standard background (stylesheet)
+        super().paintEvent(event)
+        
+        # Draw video frame if playing a video
+        track = self.window.current_track()
+        is_video = track is not None and str(track.path).lower().endswith(".mp4")
+        
+        if is_video and getattr(self, "scaled_video_frame", None) is not None:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
+            # Draw center crop of the expanded frame to cover the entire panel
+            target_rect = self.rect()
+            s_width = target_rect.width()
+            s_height = target_rect.height()
+            
+            # scaled_video_frame is pre-scaled to fully cover the target size,
+            # so we crop the excess from the center.
+            x = max(0, (self.scaled_video_frame.width() - s_width) // 2)
+            y = max(0, (self.scaled_video_frame.height() - s_height) // 2)
+            source_rect = QRectF(x, y, s_width, s_height)
+            
+            painter.drawImage(QRectF(target_rect), self.scaled_video_frame, source_rect)
+            
+            # Draw a subtle dark gradient at the bottom (bottom 35% of the height) to ensure text/controls are readable
+            gradient = QLinearGradient(0, self.height() * 0.65, 0, self.height())
+            gradient.setColorAt(0.0, QColor(0, 0, 0, 0))
+            gradient.setColorAt(1.0, QColor(0, 0, 0, 180))
+            painter.fillRect(QRectF(0, self.height() * 0.65, self.width(), self.height() * 0.35), gradient)
+            
+            painter.end()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        
+        # Re-scale video frame on resize if present
+        if getattr(self, "raw_video_frame", None) is not None:
+            blurred = self.raw_video_frame.scaled(
+                160, 160,
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.scaled_video_frame = blurred.scaled(
+                self.width(), self.height(),
+                Qt.AspectRatioMode.KeepAspectRatioByExpanding,
+                Qt.TransformationMode.SmoothTransformation
+            )
+        
+        # Calculate dynamic disc size based on current width (min 200px, max 450px)
+        disc_size = min(max(200, self.width() - 40), 450)
+        self.disc.setFixedSize(disc_size, disc_size)
+        
+        # Scale the mini wave visualizer proportionally
+        visualizer_width = min(260, self.width() - 80)
+        self.mini_wave.setFixedSize(visualizer_width, 40)
+        
+        # Re-fit labels for the new width
+        self.refit_labels()
+        
+        # Remember preferred size when resized by user (splitter dragging)
+        anim = getattr(self.window, "splitter_animation", None)
+        is_animating = anim is not None and anim.state() == QVariantAnimation.State.Running
+        if self.isVisible() and not is_animating and self.width() > 50:
+            self.window.preferred_now_playing_width = self.width()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        track = self.window.current_track()
+        if track and str(track.path).lower().endswith(".mp4"):
+            self.window.player.setVideoOutput(self.video_sink)
+
+    def refit_labels(self) -> None:
+        track = self.window.current_track()
+        if track is None:
+            self.set_fitted_label(self.song_label, self.window.tr("not_playing"), 22, 14, 2)
+            self.artist_label.setText("")
+        else:
+            self.set_fitted_label(self.song_label, track.title, 20, 7, 5)
+            self.set_fitted_label(self.artist_label, f"{track.artist} · {self.window.display_album(track.album)}", 13, 10, 1)
+
     def control_button(self, kind: str, callback, primary: bool = False) -> MiniControlButton:
         return MiniControlButton(kind, callback, primary)
 
@@ -351,6 +509,11 @@ class NowPlayingWindow(QWidget):
             self.set_fitted_label(self.song_label, self.window.tr("not_playing"), 22, 14, 2)
             self.artist_label.setText("")
             self.update_extra_buttons()
+            self.disc.setVisible(True)
+            self.mini_wave.setVisible(True)
+            self.raw_video_frame = None
+            self.scaled_video_frame = None
+            self.update()
             return
         cover = self.window.safe_track_pixmap(track, 360, allow_extract=True)
         accent = self.extract_accent_color(cover)
@@ -361,6 +524,19 @@ class NowPlayingWindow(QWidget):
         self.set_fitted_label(self.song_label, track.title, 20, 7, 5)
         self.set_fitted_label(self.artist_label, f"{track.artist} · {self.window.display_album(track.album)}", 13, 10, 1)
         self.update_extra_buttons()
+
+        is_video = track is not None and str(track.path).lower().endswith(".mp4")
+        self.disc.setVisible(True)
+        self.mini_wave.setVisible(True)
+        if is_video:
+            cover_path = self.window.track_art_path(track, allow_extract=True)
+            has_real_cover = cover_path is not None and cover_path.exists()
+            self.has_video_thumbnail = has_real_cover
+            self.window.player.setVideoOutput(self.video_sink)
+        else:
+            self.raw_video_frame = None
+            self.scaled_video_frame = None
+            self.update()
 
     def extract_accent_color(self, pixmap: QPixmap) -> QColor:
         if pixmap.isNull():
@@ -418,6 +594,9 @@ class NowPlayingWindow(QWidget):
             b = int(c1.blue() + t * (c2.blue() - c1.blue()))
             return QColor(r, g, b)
             
+        track = self.window.current_track()
+        is_video = track is not None and str(track.path).lower().endswith(".mp4")
+
         def update_style(t):
             curr_accent = interp(start_accent, target_accent, t)
             curr_bg = interp(start_bg, target_bg, t)
@@ -425,14 +604,16 @@ class NowPlayingWindow(QWidget):
             self.current_accent = curr_accent
             self.current_bg = curr_bg
             
+            bg_val = "transparent" if is_video else curr_bg.name()
+            
             self.setStyleSheet(
                 self.window.styleSheet()
                 + f"""
                 QWidget#nowPlayingWindow {{
-                    background: {curr_bg.name()};
+                    background: {bg_val};
                 }}
                 QWidget#nowPlayingWindow::disabled {{
-                    background: {curr_bg.name()};
+                    background: {bg_val};
                 }}
                 QWidget#discWidget {{
                     background: transparent;

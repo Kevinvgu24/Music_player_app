@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import hashlib
 import shutil
 import subprocess
@@ -42,10 +43,25 @@ def search_text(value: object) -> str:
     return " ".join(spaced.split())
 
 
+_folder_art_cache: dict[Path, Path | None] = {}
+
 def find_folder_art(path: Path, root: Path) -> Path | None:
     current = path.parent
-    while current == root or root in current.parents:
-        images = [item for item in current.iterdir() if item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS]
+    if current in _folder_art_cache:
+        return _folder_art_cache[current]
+
+    art_path = None
+    curr = current
+    while curr == root or root in curr.parents:
+        if curr in _folder_art_cache:
+            art_path = _folder_art_cache[curr]
+            break
+
+        try:
+            images = [item for item in curr.iterdir() if item.is_file() and item.suffix.lower() in IMAGE_EXTENSIONS]
+        except OSError:
+            images = []
+
         if images:
             preferred = sorted(
                 images,
@@ -55,11 +71,14 @@ def find_folder_art(path: Path, root: Path) -> Path | None:
                     search_text(item.name),
                 ),
             )
-            return preferred[0]
-        if current == root:
+            art_path = preferred[0]
             break
-        current = current.parent
-    return None
+        if curr == root:
+            break
+        curr = curr.parent
+
+    _folder_art_cache[current] = art_path
+    return art_path
 
 
 def embedded_art_cache_path(path: Path) -> Path:
@@ -182,11 +201,30 @@ def scan_library(root: Path) -> list[Track]:
     if not root.exists():
         return []
 
+    # Clear folder art cache for each new scan to avoid stale entries
+    _folder_art_cache.clear()
+
     tracks: list[Track] = []
-    for path in sorted(root.rglob("*"), key=lambda item: str(item).casefold()):
-        if not path.is_file() or path.suffix.lower() not in AUDIO_EXTENSIONS:
+    audio_files: list[Path] = []
+    
+    # Traverse the directory tree using os.walk (fast scandir on Windows)
+    try:
+        for dirpath, _, filenames in os.walk(root):
+            for filename in filenames:
+                ext = os.path.splitext(filename)[1].lower()
+                if ext in AUDIO_EXTENSIONS:
+                    audio_files.append(Path(dirpath) / filename)
+    except OSError:
+        pass
+
+    # Sort files case-insensitively
+    audio_files.sort(key=lambda item: str(item).casefold())
+
+    for path in audio_files:
+        try:
+            relative_parent = path.parent.relative_to(root)
+        except ValueError:
             continue
-        relative_parent = path.parent.relative_to(root)
         folder = str(relative_parent) if str(relative_parent) != "." else "Library"
         parts = relative_parent.parts
 
@@ -194,19 +232,14 @@ def scan_library(root: Path) -> list[Track]:
         first_part = parts[0] if parts else "Library"
 
         # ── Album detection (step 1): check folder names ──────────────────────
-        # Walk parts[1:] and find the deepest folder containing "album".
         album: str | None = None
         for part in parts[1:]:
             if _folder_is_album(part):
                 album = _extract_album_name(part)
 
         # ── Album detection (step 2): check the file stem ──────────────────────
-        # If no album found from folders, inspect the file name itself.
-        # e.g. "(141) WREN EVANS - CALL ME - LOI CHOI The First Album.mp3"
         if album is None and _folder_is_album(path.stem):
             extracted = _extract_album_name(path.stem)
-            # Only accept if extraction actually changed the string
-            # (i.e. we found a meaningful album name, not just the whole stem)
             if extracted != path.stem:
                 album = extracted
 

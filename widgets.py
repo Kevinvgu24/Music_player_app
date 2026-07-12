@@ -7,6 +7,7 @@ import time
 from PySide6.QtCore import QRectF, Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QLinearGradient
 from PySide6.QtWidgets import QSlider, QWidget
+from PySide6.QtMultimedia import QMediaPlayer
 
 
 class SeekSlider(QSlider):
@@ -94,7 +95,6 @@ class MusicVisualizer(QWidget):
         # Check player state
         playing = False
         if self.player:
-            from PySide6.QtMultimedia import QMediaPlayer
             playing = self.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState
 
         if playing:
