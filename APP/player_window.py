@@ -3690,72 +3690,97 @@ class PlayerWindow(QMainWindow):
         progress_dialog.canceled.connect(on_cancel)
         
         def run_upload():
-            import uuid
-            import urllib.request
-            from library import parse_track_info
-            
-            for i, file_path_str in enumerate(chosen_files):
-                if state["is_cancelled"]:
-                    break
-                    
-                file_path = Path(file_path_str)
-                
-                # Dynamic classification if set to AUTO
-                if artist_name == "AUTO":
-                    root_dir = scan_root_path if scan_root_path else file_path.parent
-                    try:
-                        file_artist, file_album, _ = parse_track_info(file_path, root_dir)
-                    except Exception:
-                        file_artist, file_album = "Library", "Singles"
-                else:
-                    file_artist = artist_name
-                    file_album = album_name
-                    
-                msg = f"Tải lên {i+1}/{total_files}: {file_path.name}..." if self.language == "vi" else f"Uploading {i+1}/{total_files}: {file_path.name}..."
-                
-                # Safe thread UI update
-                QTimer.singleShot(0, lambda val=i, m=msg: (
-                    progress_dialog.setValue(val),
-                    progress_dialog.setLabelText(m),
-                    self.status.setText(m)
-                ))
-                
+            log_path = Path(r"c:\Users\Phant\Music\Music_player_app\upload_debug.log")
+            def log_debug(msg):
                 try:
-                    upload_url = f"{url}/upload"
-                    boundary = uuid.uuid4().hex
-                    parts = []
+                    with open(log_path, "a", encoding="utf-8") as lf:
+                        lf.write(f"{msg}\n")
+                except Exception:
+                    pass
+                print(msg, flush=True)
+                
+            try:
+                log_debug(f"Starting run_upload for {total_files} files...")
+                import uuid
+                import urllib.request
+                from library import parse_track_info
+                
+                for i, file_path_str in enumerate(chosen_files):
+                    if state["is_cancelled"]:
+                        log_debug("Upload cancelled by user.")
+                        break
+                        
+                    file_path = Path(file_path_str)
+                    log_debug(f"Processing file {i+1}/{total_files}: {file_path}")
                     
-                    fields = {
-                        "artist": file_artist,
-                        "album": file_album
-                    }
-                    for name, val in fields.items():
+                    # Dynamic classification if set to AUTO
+                    if artist_name == "AUTO":
+                        root_dir = scan_root_path if scan_root_path else file_path.parent
+                        try:
+                            file_artist, file_album, _ = parse_track_info(file_path, root_dir)
+                            log_debug(f"AUTO parse: artist={file_artist}, album={file_album}")
+                        except Exception as e_parse:
+                            log_debug(f"Error parsing heuristics: {e_parse}")
+                            file_artist, file_album = "Library", "Singles"
+                    else:
+                        file_artist = artist_name
+                        file_album = album_name
+                        
+                    msg = f"Tải lên {i+1}/{total_files}: {file_path.name}..." if self.language == "vi" else f"Uploading {i+1}/{total_files}: {file_path.name}..."
+                    
+                    # Safe thread UI update
+                    QTimer.singleShot(0, lambda val=i, m=msg: (
+                        progress_dialog.setValue(val),
+                        progress_dialog.setLabelText(m),
+                        self.status.setText(m)
+                    ))
+                    
+                    try:
+                        upload_url = f"{url}/upload"
+                        log_debug(f"Uploading to {upload_url}...")
+                        boundary = uuid.uuid4().hex
+                        parts = []
+                        
+                        fields = {
+                            "artist": file_artist,
+                            "album": file_album
+                        }
+                        for name, val in fields.items():
+                            parts.append(f"--{boundary}".encode('utf-8'))
+                            parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
+                            parts.append(b'')
+                            parts.append(str(val).encode('utf-8'))
+                            
                         parts.append(f"--{boundary}".encode('utf-8'))
-                        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
+                        parts.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode('utf-8'))
+                        parts.append(b'Content-Type: application/octet-stream')
                         parts.append(b'')
-                        parts.append(str(val).encode('utf-8'))
+                        with open(file_path, 'rb') as f:
+                            parts.append(f.read())
+                            
+                        parts.append(f"--{boundary}--".encode('utf-8'))
+                        parts.append(b'')
                         
-                    parts.append(f"--{boundary}".encode('utf-8'))
-                    parts.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode('utf-8'))
-                    parts.append(b'Content-Type: application/octet-stream')
-                    parts.append(b'')
-                    with open(file_path, 'rb') as f:
-                        parts.append(f.read())
+                        body = b'\r\n'.join(parts)
+                        req = urllib.request.Request(upload_url, data=body)
+                        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+                        req.add_header('Content-Length', str(len(body)))
                         
-                    parts.append(f"--{boundary}--".encode('utf-8'))
-                    parts.append(b'')
-                    
-                    body = b'\r\n'.join(parts)
-                    req = urllib.request.Request(upload_url, data=body)
-                    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-                    req.add_header('Content-Length', str(len(body)))
-                    
-                    with urllib.request.urlopen(req, timeout=30) as response:
-                        response.read()
-                    state["success_count"] += 1
-                except Exception as e:
-                    print(f"Error uploading {file_path.name}: {e}", flush=True)
-                    
+                        log_debug("Sending request...")
+                        with urllib.request.urlopen(req, timeout=30) as response:
+                            response.read()
+                        state["success_count"] += 1
+                        log_debug("Uploaded successfully!")
+                    except Exception as e:
+                        log_debug(f"Error uploading {file_path.name}: {e}")
+                        import traceback
+                        log_debug(traceback.format_exc())
+                        
+            except Exception as outer_e:
+                log_debug(f"CRITICAL OUTER ERROR: {outer_e}")
+                import traceback
+                log_debug(traceback.format_exc())
+                
             def on_finished():
                 progress_dialog.close()
                 success_count = state["success_count"]
