@@ -205,7 +205,10 @@ def download_track(
                 match = percent_re.search(line)
                 if match:
                     percent_str = match.group(1)
-                    progress_callback(percent_str)
+                    if progress_callback(percent_str) is False:
+                        proc.terminate()
+                        proc.wait()
+                        return None, None, "Cancelled by user"
                     
         proc.wait()
         

@@ -3033,9 +3033,35 @@ class PlayerWindow(QMainWindow):
             btn.setText("0%")
             
         self.status.setText(self.tr("download_start", title=title))
+        
+        from PySide6.QtWidgets import QProgressDialog
+        from PySide6.QtCore import Qt
+        progress_dialog = QProgressDialog(
+            f"Đang chuẩn bị tải {title}..." if self.language == "vi" else f"Preparing to download {title}...",
+            "Hủy" if self.language == "vi" else "Cancel",
+            0,
+            100,
+            self
+        )
+        progress_dialog.setWindowTitle("Tải nhạc" if self.language == "vi" else "Downloading music")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        
+        self._download_progress_dialog = progress_dialog
+        self._download_cancelled = False
+        
+        def on_cancel():
+            self._download_cancelled = True
+            self.status.setText("Đã hủy tải nhạc" if self.language == "vi" else "Download cancelled")
+            
+        progress_dialog.canceled.connect(on_cancel)
             
         def progress_cb(percent_str):
+            if self._download_cancelled:
+                return False
             self.soundcloud_worker.download_progress.emit(row, f"{percent_str}%")
+            return True
             
         def run():
             try:
@@ -3061,8 +3087,31 @@ class PlayerWindow(QMainWindow):
         btn = self.soundcloud_table.cellWidget(row, 4)
         if btn:
             btn.setText(progress_str)
+            
+        try:
+            percent_val = float(progress_str.replace("%", "").strip())
+            percent_int = int(percent_val)
+        except Exception:
+            percent_int = 0
+            
+        if hasattr(self, "_download_progress_dialog") and self._download_progress_dialog:
+            self._download_progress_dialog.setValue(percent_int)
+            title_item = self.soundcloud_table.item(row, 0)
+            title = title_item.text() if title_item else "Song"
+            self._download_progress_dialog.setLabelText(
+                f"Đang tải {title}: {progress_str}" if self.language == "vi" else f"Downloading {title}: {progress_str}"
+            )
+            
+        title_item = self.soundcloud_table.item(row, 0)
+        if title_item:
+            title = title_item.text()
+            self.status.setText(f"Đang tải {title}: {progress_str}" if self.language == "vi" else f"Downloading {title}: {progress_str}")
 
     def handle_download_done(self, row: int, success: bool, error_msg: str) -> None:
+        if hasattr(self, "_download_progress_dialog") and self._download_progress_dialog:
+            self._download_progress_dialog.close()
+            self._download_progress_dialog = None
+            
         btn = self.soundcloud_table.cellWidget(row, 4)
         if btn:
             if success:
@@ -3073,7 +3122,8 @@ class PlayerWindow(QMainWindow):
                 btn.setText(self.tr("error_status"))
                 btn.setStyleSheet("color: #ef4444; font-weight: bold; margin: 20px 8px;")
                 btn.setEnabled(True)
-                QMessageBox.warning(self, self.tr("download_failed").split(":")[0], f"{self.tr('download_failed').format(title=error_msg)}")
+                if error_msg != "Cancelled by user":
+                    QMessageBox.warning(self, self.tr("download_failed").split(":")[0], f"{self.tr('download_failed').format(title=error_msg)}")
 
     def download_server_track(self, track: Track) -> None:
         from constants import SERVER_URL
@@ -3108,6 +3158,28 @@ class PlayerWindow(QMainWindow):
                 
         self.status.setText(self.tr("download_start", title=track.title))
         
+        from PySide6.QtWidgets import QProgressDialog
+        from PySide6.QtCore import Qt
+        progress_dialog = QProgressDialog(
+            f"Đang chuẩn bị tải {track.title}..." if self.language == "vi" else f"Preparing to download {track.title}...",
+            "Hủy" if self.language == "vi" else "Cancel",
+            0,
+            100,
+            self
+        )
+        progress_dialog.setWindowTitle("Tải nhạc từ Server" if self.language == "vi" else "Downloading from Server")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        
+        self._download_progress_dialog = progress_dialog
+        self._download_cancelled = False
+        
+        def on_cancel():
+            self._download_cancelled = True
+            
+        progress_dialog.canceled.connect(on_cancel)
+        
         def run():
             import urllib.request
             import urllib.parse
@@ -3116,9 +3188,29 @@ class PlayerWindow(QMainWindow):
                 audio_url = f"{SERVER_URL}/audio/{urllib.parse.quote(relative_part)}"
                 
                 with urllib.request.urlopen(audio_url, timeout=15) as response:
+                    content_length = response.getheader('Content-Length')
+                    total_size = int(content_length) if content_length else 0
+                    
+                    downloaded = 0
+                    chunk_size = 1024 * 64
                     with open(dest_path, "wb") as f:
-                        f.write(response.read())
-                        
+                        while True:
+                            if self._download_cancelled:
+                                raise Exception("Cancelled by user")
+                            chunk = response.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                percent = int(downloaded * 100 / total_size)
+                                msg = f"Đang tải {track.title}: {percent}%..." if self.language == "vi" else f"Downloading {track.title}: {percent}%..."
+                                QTimer.singleShot(0, lambda p=percent, m=msg: (
+                                    progress_dialog.setValue(p),
+                                    progress_dialog.setLabelText(m),
+                                    self.status.setText(m)
+                                ))
+                                
                 try:
                     cover_url = f"{SERVER_URL}/cover/{urllib.parse.quote(relative_part)}"
                     cover_dest = dest_dir / "cover.jpg"
@@ -3131,12 +3223,21 @@ class PlayerWindow(QMainWindow):
                     
                 QTimer.singleShot(0, lambda: self.on_server_download_success(track))
             except Exception as e:
+                try:
+                    if dest_path.exists():
+                        dest_path.unlink()
+                except Exception:
+                    pass
                 QTimer.singleShot(0, lambda err=str(e): self.on_server_download_failed(track, err))
                 
         import threading
         threading.Thread(target=run, daemon=True).start()
-
+        
     def on_server_download_success(self, track: Track) -> None:
+        if hasattr(self, "_download_progress_dialog") and self._download_progress_dialog:
+            self._download_progress_dialog.close()
+            self._download_progress_dialog = None
+            
         self.status.setText(self.tr("download_success", title=track.title))
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.information(
@@ -3147,6 +3248,14 @@ class PlayerWindow(QMainWindow):
         self.reload_library()
 
     def on_server_download_failed(self, track: Track, error_msg: str) -> None:
+        if hasattr(self, "_download_progress_dialog") and self._download_progress_dialog:
+            self._download_progress_dialog.close()
+            self._download_progress_dialog = None
+            
+        if error_msg == "Cancelled by user":
+            self.status.setText("Đã hủy tải nhạc" if self.language == "vi" else "Download cancelled")
+            return
+            
         self.status.setText(self.tr("download_failed", title=track.title))
         from PySide6.QtWidgets import QMessageBox
         QMessageBox.warning(
