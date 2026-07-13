@@ -3364,14 +3364,42 @@ class PlayerWindow(QMainWindow):
                 self.hero_sync_button.show()
                 self.hero_sync_button.setText(self.tr("sync_server_btn"))
 
-        # Select files
-        from PySide6.QtWidgets import QFileDialog
-        chosen_files, _ = QFileDialog.getOpenFileNames(
-            self,
-            "Chọn file nhạc để tải lên" if self.language == "vi" else "Select Music Files to Upload",
-            "",
-            "Audio Files (*.mp3 *.flac *.wav *.m4a *.ogg *.aac *.opus *.mp4)"
-        )
+        from PySide6.QtWidgets import QMessageBox, QFileDialog
+        
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Phương thức tải lên" if self.language == "vi" else "Upload Method")
+        msg_box.setText("Bạn muốn tải lên các tệp tin riêng lẻ hay quét cả thư mục?" if self.language == "vi" else "Do you want to upload individual files or scan a folder?")
+        
+        files_btn = msg_box.addButton("Chọn file" if self.language == "vi" else "Select Files", QMessageBox.ButtonRole.YesRole)
+        folder_btn = msg_box.addButton("Quét thư mục" if self.language == "vi" else "Scan Folder", QMessageBox.ButtonRole.NoRole)
+        cancel_btn = msg_box.addButton("Hủy" if self.language == "vi" else "Cancel", QMessageBox.ButtonRole.RejectRole)
+        
+        msg_box.exec()
+        clicked = msg_box.clickedButton()
+        
+        chosen_files = []
+        if clicked == files_btn:
+            chosen_files, _ = QFileDialog.getOpenFileNames(
+                self,
+                "Chọn file nhạc để tải lên" if self.language == "vi" else "Select Music Files to Upload",
+                "",
+                "Audio Files (*.mp3 *.flac *.wav *.m4a *.ogg *.aac *.opus *.mp4)"
+            )
+        elif clicked == folder_btn:
+            selected_dir = QFileDialog.getExistingDirectory(
+                self,
+                "Chọn thư mục nhạc để quét và tải lên" if self.language == "vi" else "Select Music Folder to Scan and Upload",
+                ""
+            )
+            if selected_dir:
+                import os
+                from library import AUDIO_EXTENSIONS
+                for dirpath, _, filenames in os.walk(selected_dir):
+                    for filename in filenames:
+                        ext = os.path.splitext(filename)[1].lower()
+                        if ext in AUDIO_EXTENSIONS:
+                            chosen_files.append(os.path.join(dirpath, filename))
+                            
         if not chosen_files:
             return
 
