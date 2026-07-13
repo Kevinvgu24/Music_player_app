@@ -97,19 +97,21 @@ class UploadWorker(QObject):
     progress_changed = Signal(int, str)
     upload_finished = Signal(int)
     
-    def __init__(self, chosen_files, artist_name, album_name, url, language):
+    def __init__(self, chosen_files, artist_name, album_name, url, language, scan_root=None):
         super().__init__()
         self.chosen_files = chosen_files
         self.artist_name = artist_name
         self.album_name = album_name
         self.url = url
         self.language = language
+        self.scan_root = Path(scan_root) if scan_root else None
         self.is_cancelled = False
         
     def run(self):
         import uuid
         import urllib.request
         from pathlib import Path
+        from library import parse_track_info
         
         total_files = len(self.chosen_files)
         success_count = 0
@@ -119,6 +121,18 @@ class UploadWorker(QObject):
                 break
                 
             file_path = Path(file_path_str)
+            
+            # Dynamic classification if set to AUTO
+            if self.artist_name == "AUTO":
+                root_dir = self.scan_root if self.scan_root else file_path.parent
+                try:
+                    file_artist, file_album, _ = parse_track_info(file_path, root_dir)
+                except Exception:
+                    file_artist, file_album = "Library", "Singles"
+            else:
+                file_artist = self.artist_name
+                file_album = self.album_name
+
             msg = f"Tải lên {i+1}/{total_files}: {file_path.name}..." if self.language == "vi" else f"Uploading {i+1}/{total_files}: {file_path.name}..."
             self.progress_changed.emit(i, msg)
             
@@ -128,8 +142,8 @@ class UploadWorker(QObject):
                 parts = []
                 
                 fields = {
-                    "artist": self.artist_name,
-                    "album": self.album_name
+                    "artist": file_artist,
+                    "album": file_album
                 }
                 for name, val in fields.items():
                     parts.append(f"--{boundary}".encode('utf-8'))
@@ -3464,6 +3478,7 @@ class PlayerWindow(QMainWindow):
         clicked = msg_box.clickedButton()
         
         chosen_files = []
+        scan_root_path = None
         if clicked == files_btn:
             chosen_files, _ = QFileDialog.getOpenFileNames(
                 self,
@@ -3478,6 +3493,7 @@ class PlayerWindow(QMainWindow):
                 ""
             )
             if selected_dir:
+                scan_root_path = selected_dir
                 import os
                 from library import AUDIO_EXTENSIONS
                 for dirpath, _, filenames in os.walk(selected_dir):
@@ -3489,34 +3505,53 @@ class PlayerWindow(QMainWindow):
         if not chosen_files:
             return
 
-        # Prompt user to confirm/edit classification info
+        # Prompt user to choose classification method
         from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QLineEdit
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Thông tin phân loại" if self.language == "vi" else "Classification Info")
-        dialog.setMinimumWidth(320)
-        form = QFormLayout(dialog)
         
-        # Heuristically parse from the first chosen file
-        first_path = Path(chosen_files[0])
-        parsed_artist, parsed_album, _ = self.parse_track_info_heuristics(first_path)
+        class_box = QMessageBox(self)
+        class_box.setWindowTitle("Phân loại nhạc" if self.language == "vi" else "Classification Method")
+        class_box.setText("Bạn muốn tự động phân tích nghệ sĩ/album cho từng file hay đặt thông tin chung cho tất cả?" if self.language == "vi" else "Do you want to auto-classify each file or set common info for all files?")
         
-        artist_input = QLineEdit(parsed_artist)
-        album_input = QLineEdit(parsed_album)
+        auto_btn = class_box.addButton("Tự động phân loại" if self.language == "vi" else "Auto-classify", QMessageBox.ButtonRole.YesRole)
+        common_btn = class_box.addButton("Đặt thông tin chung" if self.language == "vi" else "Set Common Info", QMessageBox.ButtonRole.NoRole)
+        cancel_btn = class_box.addButton("Hủy" if self.language == "vi" else "Cancel", QMessageBox.ButtonRole.RejectRole)
         
-        form.addRow("Nghệ sĩ (Artist):" if self.language == "vi" else "Artist:", artist_input)
-        form.addRow("Album:" if self.language == "vi" else "Album:", album_input)
+        class_box.exec()
+        clicked_class = class_box.clickedButton()
         
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
-        buttons.accepted.connect(dialog.accept)
-        buttons.rejected.connect(dialog.reject)
-        form.addRow(buttons)
-        
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if clicked_class == cancel_btn:
             return
             
-        artist_name = artist_input.text().strip() or "Library"
-        album_name = album_input.text().strip() or "Singles"
+        artist_name = "AUTO"
+        album_name = "AUTO"
         
+        if clicked_class == common_btn:
+            dialog = QDialog(self)
+            dialog.setWindowTitle("Thông tin phân loại chung" if self.language == "vi" else "Common Classification Info")
+            dialog.setMinimumWidth(320)
+            form = QFormLayout(dialog)
+            
+            # Heuristically parse from the first chosen file
+            first_path = Path(chosen_files[0])
+            parsed_artist, parsed_album, _ = self.parse_track_info_heuristics(first_path)
+            
+            artist_input = QLineEdit(parsed_artist)
+            album_input = QLineEdit(parsed_album)
+            
+            form.addRow("Nghệ sĩ (Artist):" if self.language == "vi" else "Artist:", artist_input)
+            form.addRow("Album:" if self.language == "vi" else "Album:", album_input)
+            
+            buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+            buttons.accepted.connect(dialog.accept)
+            buttons.rejected.connect(dialog.reject)
+            form.addRow(buttons)
+            
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+                
+            artist_name = artist_input.text().strip() or "Library"
+            album_name = album_input.text().strip() or "Singles"
+            
         # Upload chosen files sequentially using QThread and UploadWorker with QProgressDialog
         total_files = len(chosen_files)
         
@@ -3535,7 +3570,7 @@ class PlayerWindow(QMainWindow):
         progress_dialog.setMinimumDuration(0)
         progress_dialog.setValue(0)
         
-        worker = UploadWorker(chosen_files, artist_name, album_name, url, self.language)
+        worker = UploadWorker(chosen_files, artist_name, album_name, url, self.language, scan_root=scan_root_path)
         thread = QThread(self)
         worker.moveToThread(thread)
         
