@@ -3614,6 +3614,52 @@ class PlayerWindow(QMainWindow):
         if not chosen_files:
             return
 
+        # Check duplicate tracks already on the server to optimize storage
+        server_filenames = set()
+        for t in self.tracks:
+            path_str = t.path.as_posix()
+            if path_str.startswith("/server/"):
+                server_filenames.add(Path(path_str[len("/server/"):]).name.lower())
+                
+        files_already_on_server = []
+        files_to_upload = []
+        
+        for file_path_str in chosen_files:
+            fname = Path(file_path_str).name.lower()
+            if fname in server_filenames:
+                files_already_on_server.append(file_path_str)
+            else:
+                files_to_upload.append(file_path_str)
+                
+        if files_already_on_server:
+            dup_box = QMessageBox(self)
+            dup_box.setWindowTitle("Trùng lặp tệp tin" if self.language == "vi" else "Duplicate Files")
+            dup_box.setText(
+                f"Phát hiện {len(files_already_on_server)}/{len(chosen_files)} file nhạc đã tồn tại trên Server.\nBạn có muốn bỏ qua chúng để tiết kiệm dung lượng bộ nhớ?" 
+                if self.language == "vi" else 
+                f"Detected {len(files_already_on_server)}/{len(chosen_files)} files already exist on the Server.\nDo you want to skip them to save storage space?"
+            )
+            
+            skip_btn = dup_box.addButton("Bỏ qua trùng lặp" if self.language == "vi" else "Skip Duplicates", QMessageBox.ButtonRole.YesRole)
+            all_btn = dup_box.addButton("Tải lên tất cả" if self.language == "vi" else "Upload All anyway", QMessageBox.ButtonRole.NoRole)
+            cancel_dup_btn = dup_box.addButton("Hủy" if self.language == "vi" else "Cancel", QMessageBox.ButtonRole.RejectRole)
+            
+            dup_box.exec()
+            clicked_dup = dup_box.clickedButton()
+            
+            if clicked_dup == cancel_dup_btn:
+                return
+            elif clicked_dup == skip_btn:
+                chosen_files = files_to_upload
+                
+        if not chosen_files:
+            QMessageBox.information(
+                self,
+                "Tải lên hoàn tất" if self.language == "vi" else "Upload Completed",
+                "Tất cả các tệp nhạc được chọn đã tồn tại trên Server!" if self.language == "vi" else "All selected music files already exist on the Server!"
+            )
+            return
+
         # Prompt user to choose classification method
         from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QLineEdit
         
