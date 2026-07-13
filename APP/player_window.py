@@ -97,6 +97,9 @@ class SoundCloudWorker(QObject):
 
 
 class PlayerWindow(QMainWindow):
+    reload_finished = Signal(list, str)
+    reload_failed = Signal(list, str, str)
+
     def __init__(self) -> None:
         super().__init__()
         self.library_root = DEFAULT_LIBRARY
@@ -125,6 +128,9 @@ class PlayerWindow(QMainWindow):
         self.soundcloud_worker.download_done.connect(self.handle_download_done)
         self.soundcloud_worker.stream_done.connect(self._on_stream_done)
         self.soundcloud_worker.stream_failed.connect(self._on_stream_failed)
+        
+        self.reload_finished.connect(self._on_reload_finished)
+        self.reload_failed.connect(self._on_reload_failed)
 
         self.player = QMediaPlayer(self)
         self.audio = QAudioOutput(self)
@@ -963,45 +969,73 @@ class PlayerWindow(QMainWindow):
 
     def reload_library(self) -> None:
         from constants import SERVER_URL
-        if SERVER_URL:
-            import urllib.request
-            import json
-            try:
-                self.status.setText("Đang tải danh sách nhạc từ Server..." if self.language == "vi" else "Loading track list from Server...")
-                with urllib.request.urlopen(f"{SERVER_URL}/tracks", timeout=5) as response:
-                    raw_tracks = json.loads(response.read().decode("utf-8"))
+        from library import scan_library
+        
+        self.status.setText("Đang làm mới danh sách nhạc..." if self.language == "vi" else "Refreshing track list...")
+        
+        def run():
+            if SERVER_URL:
+                import urllib.request
+                import json
+                import socket
                 
-                self.tracks = []
-                for t in raw_tracks:
-                    self.tracks.append(
-                        Track(
-                            path=Path(t["path"]),
-                            title=t["title"],
-                            folder=t["folder"],
-                            artist=t["artist"],
-                            album=t["album"],
-                            art_path=None
+                # Prevent indefinite hangs on TCP handshake to offline/firewalled server
+                socket.setdefaulttimeout(5)
+                try:
+                    with urllib.request.urlopen(f"{SERVER_URL}/tracks", timeout=5) as response:
+                        raw_tracks = json.loads(response.read().decode("utf-8"))
+                    
+                    new_tracks = []
+                    for t in raw_tracks:
+                        new_tracks.append(
+                            Track(
+                                path=Path(t["path"]),
+                                title=t["title"],
+                                folder=t["folder"],
+                                artist=t["artist"],
+                                album=t["album"],
+                                art_path=None
+                            )
                         )
-                    )
-                self.status.setText("Tải danh sách nhạc thành công!" if self.language == "vi" else "Track list loaded successfully!")
-                self.connection_status_label.setText("Online")
-                self.connection_status_label.setStyleSheet("color: #2ecc71; font-weight: bold; background-color: rgba(46, 204, 113, 0.12); border: 1px solid rgba(46, 204, 113, 0.25); border-radius: 4px; padding: 2px 8px; font-size: 11px;")
-            except Exception as e:
-                print(f"Server connection failed: {e}. Falling back to local offline library.", flush=True)
-                self.status.setText("Lỗi kết nối Server. Đang quét nhạc trong máy..." if self.language == "vi" else "Server connection failed. Scanning local music...")
-                self.connection_status_label.setText("Offline")
-                self.connection_status_label.setStyleSheet("color: #e74c3c; font-weight: bold; background-color: rgba(231, 76, 60, 0.12); border: 1px solid rgba(231, 76, 60, 0.25); border-radius: 4px; padding: 2px 8px; font-size: 11px;")
-                self.tracks = scan_library(self.library_root)
-                QMessageBox.warning(
-                    self, 
-                    "Lỗi kết nối Server" if self.language == "vi" else "Server Connection Error", 
-                    f"Không kết nối được tới Server nhạc: {e}\nĐã tự động chuyển sang thư viện ngoại tuyến." if self.language == "vi" else f"Could not connect to the music server: {e}\nAutomatically switched to offline local library."
-                )
-        else:
-            self.tracks = scan_library(self.library_root)
-            self.connection_status_label.setText("Offline")
-            self.connection_status_label.setStyleSheet("color: #e74c3c; font-weight: bold; background-color: rgba(231, 76, 60, 0.12); border: 1px solid rgba(231, 76, 60, 0.25); border-radius: 4px; padding: 2px 8px; font-size: 11px;")
-            
+                    msg = "Tải danh sách nhạc thành công!" if self.language == "vi" else "Track list loaded successfully!"
+                    self.reload_finished.emit(new_tracks, msg)
+                    return
+                except Exception as e:
+                    print(f"Server connection failed: {e}. Falling back to local offline library.", flush=True)
+                    
+                    fallback_tracks = scan_library(self.library_root)
+                    status_msg = "Lỗi kết nối Server. Đã tự động chuyển sang thư viện ngoại tuyến." if self.language == "vi" else "Server connection failed. Switched to offline library."
+                    self.reload_failed.emit(fallback_tracks, status_msg, str(e))
+            else:
+                local_tracks = scan_library(self.library_root)
+                status_msg = "Làm mới thư viện hoàn tất!" if self.language == "vi" else "Library refresh complete!"
+                self.reload_failed.emit(local_tracks, status_msg, "Server not configured")
+                
+        import threading
+        threading.Thread(target=run, daemon=True).start()
+
+    def _on_reload_finished(self, new_tracks: list[Track], status_msg: str) -> None:
+        self.tracks = new_tracks
+        self.status.setText(status_msg)
+        self.connection_status_label.setText("Online")
+        self.connection_status_label.setStyleSheet("color: #2ecc71; font-weight: bold; background-color: rgba(46, 204, 113, 0.12); border: 1px solid rgba(46, 204, 113, 0.25); border-radius: 4px; padding: 2px 8px; font-size: 11px;")
+        self.finish_reload_logic()
+        
+    def _on_reload_failed(self, fallback_tracks: list[Track], status_msg: str, error_msg: str) -> None:
+        self.status.setText(status_msg)
+        self.connection_status_label.setText("Offline")
+        self.connection_status_label.setStyleSheet("color: #e74c3c; font-weight: bold; background-color: rgba(231, 76, 60, 0.12); border: 1px solid rgba(231, 76, 60, 0.25); border-radius: 4px; padding: 2px 8px; font-size: 11px;")
+        self.tracks = fallback_tracks
+        self.finish_reload_logic()
+        
+        if error_msg and error_msg != "Server not configured":
+            QMessageBox.warning(
+                self, 
+                "Lỗi kết nối Server" if self.language == "vi" else "Server Connection Error", 
+                f"Không kết nối được tới Server nhạc: {error_msg}\nĐã tự động chuyển sang thư viện ngoại tuyến." if self.language == "vi" else f"Could not connect to the music server: {error_msg}\nAutomatically switched to offline local library."
+            )
+
+    def finish_reload_logic(self) -> None:
         self.current_index = -1
         self.update_path_label()
         self._detect_new_tracks()
