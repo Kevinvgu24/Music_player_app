@@ -70,6 +70,9 @@ from library import (
     search_text,
     get_custom_cover_path,
     set_custom_cover_path,
+    _folder_is_album,
+    _extract_album_name,
+    readable_title,
 )
 from mpris import MprisPlayerAdaptor, MprisRootAdaptor
 from now_playing import MiniControlButton, NowPlayingWindow
@@ -261,6 +264,7 @@ class PlayerWindow(QMainWindow):
         self.search_nav_button.setText(self.tr("search_nav"))
         self.soundcloud_nav_button.setText(self.tr("online_nav"))
         self.library_button.setText(self.tr("library_nav"))
+        self.upload_nav_button.setText(self.tr("upload_nav_btn"))
         self.sidebar_caption.setText(self.tr("artists_caption"))
         self.album_caption.setText(self.tr("album_caption"))
         self.hero_caption.setText(self.tr("hero_caption"))
@@ -376,12 +380,17 @@ class PlayerWindow(QMainWindow):
         self.library_button = QPushButton()
         self.library_button.setObjectName("navButton")
         self.library_button.clicked.connect(self.choose_library)
+        self.upload_nav_button = QPushButton()
+        self.upload_nav_button.setObjectName("navButton")
+        self.upload_nav_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp))
+        self.upload_nav_button.clicked.connect(self.choose_and_upload_file)
         nav_group = QVBoxLayout()
         nav_group.setSpacing(6)
         nav_group.addWidget(self.home_button)
         nav_group.addWidget(self.search_nav_button)
         nav_group.addWidget(self.soundcloud_nav_button)
         nav_group.addWidget(self.library_button)
+        nav_group.addWidget(self.upload_nav_button)
         self.sidebar_caption = QLabel()
         self.sidebar_caption.setObjectName("sidebarCaption")
         self.artist_search = QLineEdit()
@@ -963,9 +972,14 @@ class PlayerWindow(QMainWindow):
                     )
                 self.status.setText("Tải danh sách nhạc thành công!" if self.language == "vi" else "Track list loaded successfully!")
             except Exception as e:
-                self.tracks = []
-                self.status.setText(f"Lỗi kết nối Server: {e}")
-                QMessageBox.warning(self, "Lỗi kết nối Server", f"Không kết nối được tới Server nhạc: {e}")
+                print(f"Server connection failed: {e}. Falling back to local offline library.", flush=True)
+                self.status.setText("Lỗi kết nối Server. Đang quét nhạc trong máy..." if self.language == "vi" else "Server connection failed. Scanning local music...")
+                self.tracks = scan_library(self.library_root)
+                QMessageBox.warning(
+                    self, 
+                    "Lỗi kết nối Server" if self.language == "vi" else "Server Connection Error", 
+                    f"Không kết nối được tới Server nhạc: {e}\nĐã tự động chuyển sang thư viện ngoại tuyến." if self.language == "vi" else f"Could not connect to the music server: {e}\nAutomatically switched to offline local library."
+                )
         else:
             self.tracks = scan_library(self.library_root)
             
@@ -2772,7 +2786,6 @@ class PlayerWindow(QMainWindow):
         # Discard from in-progress covers
         if hasattr(self, "_in_progress_covers"):
             for path_str in list(self._in_progress_covers):
-                from library import embedded_art_cache_path
                 try:
                     if embedded_art_cache_path(Path(path_str)).resolve().as_posix() == target_path.resolve().as_posix():
                         self._in_progress_covers.discard(path_str)
@@ -3235,3 +3248,226 @@ class PlayerWindow(QMainWindow):
             self.tr("sync_failed", error="").replace(":", "").strip(),
             self.tr("sync_failed", error=error_msg)
         )
+
+    def save_server_url(self, url: str) -> None:
+        import re
+        from pathlib import Path
+        constants_path = Path(__file__).parent / "constants.py"
+        if not constants_path.exists():
+            return
+        try:
+            content = constants_path.read_text(encoding="utf-8")
+            new_content = re.sub(
+                r'SERVER_URL\s*=\s*(?:["\'][^"\']*["\']|None|""|\'\')',
+                f'SERVER_URL = "{url}"',
+                content
+            )
+            constants_path.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            print(f"Error saving SERVER_URL to constants.py: {e}", flush=True)
+
+    def parse_track_info_heuristics(self, path: Path) -> tuple[str, str, str]:
+        # Try to parse from parent folders
+        parent = path.parent
+        try:
+            rel = parent.relative_to(self.library_root)
+            parts = rel.parts
+        except ValueError:
+            parts = parent.parts[-2:] if len(parent.parts) >= 2 else (parent.parts[-1:] if parent.parts else ())
+            
+        artist = parts[0] if parts else "Library"
+        album = None
+        for part in parts[1:]:
+            if _folder_is_album(part):
+                album = _extract_album_name(part)
+        if album is None:
+            album = parts[1] if len(parts) > 1 else "Singles"
+            
+        title = readable_title(path)
+        
+        # Now apply filename heuristics if artist/album are defaults
+        stem = path.stem
+        for suffix in (" - YouTube", " Official MV", " Official Music Video"):
+            stem = stem.replace(suffix, "")
+        stem = stem.strip()
+        
+        stem_parts = [s.strip() for s in stem.split(" - ") if s.strip()]
+        
+        artist_indicators = ["ft.", "feat.", "prod.", "&", " x ", " x", "x "]
+        
+        if len(stem_parts) >= 3:
+            album_idx = -1
+            for idx, seg in enumerate(stem_parts):
+                if _folder_is_album(seg):
+                    album_idx = idx
+                    break
+            if album_idx != -1:
+                album = _extract_album_name(stem_parts[album_idx])
+                if album_idx > 0:
+                    if artist == "Library":
+                        artist = stem_parts[album_idx - 1]
+                    title = " - ".join(stem_parts[:album_idx - 1]) or stem_parts[0]
+                else:
+                    title = " - ".join(stem_parts[1:])
+            else:
+                if artist == "Library":
+                    artist = stem_parts[0]
+                    title = " - ".join(stem_parts[1:])
+                else:
+                    title = " - ".join(stem_parts[1:])
+        elif len(stem_parts) == 2:
+            seg0, seg1 = stem_parts[0], stem_parts[1]
+            seg0_has_art = any(ind in seg0.lower() for ind in artist_indicators)
+            seg1_has_art = any(ind in seg1.lower() for ind in artist_indicators)
+            
+            if seg1_has_art and not seg0_has_art:
+                if artist == "Library":
+                    artist = seg1
+                title = seg0
+            elif seg0_has_art and not seg1_has_art:
+                if artist == "Library":
+                    artist = seg0
+                title = seg1
+            else:
+                if artist == "Library":
+                    artist = seg0
+                    title = seg1
+                else:
+                    if artist.lower() in seg1.lower():
+                        title = seg0
+                    elif artist.lower() in seg0.lower():
+                        title = seg1
+                    else:
+                        title = stem
+                        
+        return artist, album, title
+
+    def choose_and_upload_file(self) -> None:
+        from constants import SERVER_URL
+        url = SERVER_URL
+        if not url:
+            from PySide6.QtWidgets import QInputDialog
+            text, ok = QInputDialog.getText(
+                self,
+                "Cấu hình Server URL" if self.language == "vi" else "Configure Server URL",
+                "Nhập địa chỉ URL của Server nhạc (ví dụ http://192.168.1.245:8000):" if self.language == "vi" else "Enter the music Server URL (e.g. http://192.168.1.245:8000):",
+                text="http://localhost:8000"
+            )
+            if not ok or not text.strip():
+                return
+            url = text.strip()
+            self.save_server_url(url)
+            import constants
+            constants.SERVER_URL = url
+            self.update_path_label()
+            if hasattr(self, "hero_sync_button"):
+                self.hero_sync_button.show()
+                self.hero_sync_button.setText(self.tr("sync_server_btn"))
+
+        # Select files
+        from PySide6.QtWidgets import QFileDialog
+        chosen_files, _ = QFileDialog.getOpenFileNames(
+            self,
+            "Chọn file nhạc để tải lên" if self.language == "vi" else "Select Music Files to Upload",
+            "",
+            "Audio Files (*.mp3 *.flac *.wav *.m4a *.ogg *.aac *.opus *.mp4)"
+        )
+        if not chosen_files:
+            return
+
+        # Prompt user to confirm/edit classification info
+        from PySide6.QtWidgets import QDialog, QFormLayout, QDialogButtonBox, QLineEdit
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Thông tin phân loại" if self.language == "vi" else "Classification Info")
+        dialog.setMinimumWidth(320)
+        form = QFormLayout(dialog)
+        
+        # Heuristically parse from the first chosen file
+        first_path = Path(chosen_files[0])
+        parsed_artist, parsed_album, _ = self.parse_track_info_heuristics(first_path)
+        
+        artist_input = QLineEdit(parsed_artist)
+        album_input = QLineEdit(parsed_album)
+        
+        form.addRow("Nghệ sĩ (Artist):" if self.language == "vi" else "Artist:", artist_input)
+        form.addRow("Album:" if self.language == "vi" else "Album:", album_input)
+        
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        form.addRow(buttons)
+        
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+            
+        artist_name = artist_input.text().strip() or "Library"
+        album_name = album_input.text().strip() or "Singles"
+        
+        # Upload chosen files sequentially
+        total_files = len(chosen_files)
+        self.status.setText(f"Đang chuẩn bị tải lên {total_files} file..." if self.language == "vi" else f"Preparing to upload {total_files} files...")
+        
+        def run_upload():
+            import uuid
+            import urllib.request
+            from PySide6.QtWidgets import QMessageBox
+            success_count = 0
+            for i, file_path_str in enumerate(chosen_files):
+                file_path = Path(file_path_str)
+                msg = f"Tải lên {i+1}/{total_files}: {file_path.name}..." if self.language == "vi" else f"Uploading {i+1}/{total_files}: {file_path.name}..."
+                QTimer.singleShot(0, lambda m=msg: self.status.setText(m))
+                
+                try:
+                    upload_url = f"{url}/upload"
+                    boundary = uuid.uuid4().hex
+                    parts = []
+                    
+                    fields = {
+                        "artist": artist_name,
+                        "album": album_name
+                    }
+                    for name, val in fields.items():
+                        parts.append(f"--{boundary}".encode('utf-8'))
+                        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
+                        parts.append(b'')
+                        parts.append(str(val).encode('utf-8'))
+                        
+                    parts.append(f"--{boundary}".encode('utf-8'))
+                    parts.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode('utf-8'))
+                    parts.append(b'Content-Type: application/octet-stream')
+                    parts.append(b'')
+                    with open(file_path, 'rb') as f:
+                        parts.append(f.read())
+                        
+                    parts.append(f"--{boundary}--".encode('utf-8'))
+                    parts.append(b'')
+                    
+                    body = b'\r\n'.join(parts)
+                    req = urllib.request.Request(upload_url, data=body)
+                    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+                    req.add_header('Content-Length', str(len(body)))
+                    
+                    with urllib.request.urlopen(req, timeout=30) as response:
+                        response.read()
+                    success_count += 1
+                except Exception as e:
+                    print(f"Error uploading {file_path.name}: {e}", flush=True)
+                    
+            msg_done = f"Đã tải lên thành công {success_count}/{total_files} file!" if self.language == "vi" else f"Successfully uploaded {success_count}/{total_files} files!"
+            QTimer.singleShot(0, lambda m=msg_done: self.status.setText(m))
+            
+            def show_done_box():
+                QMessageBox.information(
+                    self,
+                    "Tải lên hoàn tất" if self.language == "vi" else "Upload Completed",
+                    msg_done
+                )
+            QTimer.singleShot(0, show_done_box)
+            
+            # Reload library to show new tracks if we are in server mode
+            import constants
+            if constants.SERVER_URL:
+                QTimer.singleShot(0, self.reload_library)
+                
+        import threading
+        threading.Thread(target=run_upload, daemon=True).start()

@@ -103,6 +103,106 @@ def _extract_album_name(folder_name: str) -> str:
             return candidate
     return folder_name
 
+def parse_track_info(path: Path, root: Path) -> tuple[str, str, str]:
+    try:
+        relative_parent = path.parent.relative_to(root)
+    except ValueError:
+        relative_parent = Path(".")
+        
+    folder = str(relative_parent) if str(relative_parent) != "." else "Library"
+    parts = relative_parent.parts
+
+    # 1. Folder-based defaults
+    artist = parts[0] if parts else "Library"
+    album = None
+    for part in parts[1:]:
+        if _folder_is_album(part):
+            album = _extract_album_name(part)
+            
+    if album is None:
+        album = parts[1] if len(parts) > 1 else "Singles"
+        
+    title = readable_title(path)
+
+    # 2. Refine using stem segments
+    stem = path.stem
+    for suffix in (" - YouTube", " Official MV", " Official Music Video"):
+        stem = stem.replace(suffix, "")
+    stem = stem.strip()
+    
+    import re
+    def is_track_info(s: str) -> bool:
+        s_low = s.strip().lower()
+        if re.match(r'^\d+$', s_low):
+            return True
+        if re.match(r'^track\s*\d+$', s_low):
+            return True
+        return False
+        
+    stem_parts = [s.strip() for s in stem.split(" - ") if s.strip()]
+    
+    file_album = None
+    album_idx = -1
+    for idx, seg in enumerate(stem_parts):
+        if _folder_is_album(seg):
+            album_idx = idx
+            file_album = _extract_album_name(seg)
+            break
+            
+    if file_album:
+        album = file_album
+        
+    rem_parts = [seg for idx, seg in enumerate(stem_parts) if idx != album_idx]
+    core_parts = [seg for seg in rem_parts if not is_track_info(seg)]
+    
+    if not core_parts:
+        core_parts = rem_parts
+        
+    if len(core_parts) >= 2:
+        seg0, seg1 = core_parts[0], core_parts[1]
+        
+        seg0_has_track = re.match(r'^\d+\s*[\.\)\-_]', seg0.lower()) is not None
+        seg1_has_track = re.match(r'^\d+\s*[\.\)\-_]', seg1.lower()) is not None
+        
+        if seg0_has_track and not seg1_has_track:
+            if artist == "Library":
+                artist = seg1
+            title = seg0
+        elif seg1_has_track and not seg0_has_track:
+            if artist == "Library":
+                artist = seg0
+            title = seg1
+        else:
+            artist_indicators = ["ft.", "feat.", "prod.", "&", " x ", " x", "x "]
+            seg0_has_art = any(ind in seg0.lower() for ind in artist_indicators)
+            seg1_has_art = any(ind in seg1.lower() for ind in artist_indicators)
+            
+            if seg1_has_art and not seg0_has_art:
+                if artist == "Library":
+                    artist = seg1
+                title = seg0
+            elif seg0_has_art and not seg1_has_art:
+                if artist == "Library":
+                    artist = seg0
+                title = seg1
+            else:
+                if artist != "Library":
+                    if artist.lower() in seg1.lower():
+                        title = seg0
+                    elif artist.lower() in seg0.lower():
+                        title = seg1
+                    else:
+                        title = seg1
+                        artist = seg0
+                else:
+                    artist = seg0
+                    title = seg1
+    elif len(core_parts) == 1:
+        title = core_parts[0]
+
+    return artist, album, title
+
+
 def scan_library(root: Path):
     if not root.exists():
         return []
@@ -128,30 +228,16 @@ def scan_library(root: Path):
         except ValueError:
             continue
         folder = str(relative_parent) if str(relative_parent) != "." else "Library"
-        parts = relative_parent.parts
 
-        first_part = parts[0] if parts else "Library"
-
-        album = None
-        for part in parts[1:]:
-            if _folder_is_album(part):
-                album = _extract_album_name(part)
-
-        if album is None and _folder_is_album(path.stem):
-            extracted = _extract_album_name(path.stem)
-            if extracted != path.stem:
-                album = extracted
-
-        if album is None:
-            album = parts[1] if len(parts) > 1 else "Singles"
+        artist, album, title = parse_track_info(path, root)
 
         # Relpath from root to map for API
         rel_path = path.relative_to(root).as_posix()
         tracks.append({
             "path": f"/server/{rel_path}",
-            "title": readable_title(path),
+            "title": title,
             "folder": folder,
-            "artist": first_part,
+            "artist": artist,
             "album": album
         })
     return tracks
@@ -228,6 +314,14 @@ def upload_file():
     artist = request.form.get('artist', 'Library').strip()
     album = request.form.get('album', 'Singles').strip()
     
+    orig_filename = file.filename
+    if (artist == 'Library' or album == 'Singles') and orig_filename:
+        parsed_artist, parsed_album, _ = parse_track_info(Path(orig_filename), MUSIC_DIR)
+        if artist == 'Library':
+            artist = parsed_artist
+        if album == 'Singles':
+            album = parsed_album
+            
     # Simple sanitization
     def sanitize(name):
         return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '.')).strip()
@@ -236,7 +330,6 @@ def upload_file():
     s_album = sanitize(album) or 'Singles'
     
     # We want to preserve the original filename ext
-    orig_filename = file.filename
     name_parts = os.path.splitext(orig_filename)
     clean_name = sanitize(name_parts[0]) + name_parts[1].lower()
     

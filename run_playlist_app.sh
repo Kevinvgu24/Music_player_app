@@ -1,10 +1,10 @@
 #!/bin/sh
 APP_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-APP_FILE="$APP_DIR/music_player.py"
+APP_FILE="$APP_DIR/APP/music_player.py"
 LOG_FILE="$APP_DIR/playlist_app.log"
 VENDOR_DIR="$APP_DIR/vendor"
 
-cd "$APP_DIR" || exit 1
+cd "$APP_DIR/APP" || exit 1
 
 {
   echo "---- $(date) ----"
@@ -13,7 +13,7 @@ cd "$APP_DIR" || exit 1
 
 if [ -d "$VENDOR_DIR/PySide6" ]; then
   if [ "${container:-}" = "flatpak" ] && command -v flatpak-spawn >/dev/null 2>&1; then
-    exec flatpak-spawn --host env PYTHONPATH="$VENDOR_DIR${PYTHONPATH:+:$PYTHONPATH}" sh -c 'cd "$1" || exit 1; shift; exec python3 music_player.py "$@"' sh "$APP_DIR" "$@" >> "$LOG_FILE" 2>&1
+    exec flatpak-spawn --host env PYTHONPATH="$VENDOR_DIR${PYTHONPATH:+:$PYTHONPATH}" sh -c 'cd "$1" || exit 1; shift; exec python3 music_player.py "$@"' sh "$APP_DIR/APP" "$@" >> "$LOG_FILE" 2>&1
   fi
   exec env PYTHONPATH="$VENDOR_DIR${PYTHONPATH:+:$PYTHONPATH}" python3 "$APP_FILE" "$@" >> "$LOG_FILE" 2>&1
 fi

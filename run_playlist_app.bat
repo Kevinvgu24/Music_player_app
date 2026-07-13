@@ -1,11 +1,11 @@
 @echo off
 setlocal
 set "APP_DIR=%~dp0"
-set "APP_FILE=%APP_DIR%music_player.py"
+set "APP_FILE=%APP_DIR%APP\music_player.py"
 set "LOG_FILE=%APP_DIR%playlist_app.log"
 set "VENDOR_DIR=%APP_DIR%vendor"
 
-cd /d "%APP_DIR%"
+cd /d "%APP_DIR%APP"
 
 echo ---- %DATE% %TIME% ---- >> "%LOG_FILE%"
 echo Launching Playlist Offline >> "%LOG_FILE%"
