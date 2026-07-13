@@ -970,10 +970,10 @@ class PlayerWindow(QMainWindow):
                             art_path=None
                         )
                     )
-                self.status.setText("Tải danh sách nhạc thành công!" if self.language == "vi" else "Track list loaded successfully!")
+                self.set_status_notification("Tải danh sách nhạc thành công!" if self.language == "vi" else "Track list loaded successfully!", "success")
             except Exception as e:
                 print(f"Server connection failed: {e}. Falling back to local offline library.", flush=True)
-                self.status.setText("Lỗi kết nối Server. Đang quét nhạc trong máy..." if self.language == "vi" else "Server connection failed. Scanning local music...")
+                self.set_status_notification("Lỗi kết nối Server. Đang quét nhạc trong máy..." if self.language == "vi" else "Server connection failed. Scanning local music...", "error")
                 self.tracks = scan_library(self.library_root)
                 QMessageBox.warning(
                     self, 
@@ -3471,3 +3471,25 @@ class PlayerWindow(QMainWindow):
                 
         import threading
         threading.Thread(target=run_upload, daemon=True).start()
+
+    def set_status_notification(self, text: str, color_type: str) -> None:
+        self.status.setText(text)
+        if color_type == "success":
+            self.status.setStyleSheet("color: #2ecc71; font-weight: bold; background-color: rgba(46, 204, 113, 0.12); border: 1px solid rgba(46, 204, 113, 0.25); border-radius: 6px; padding: 4px 8px;")
+        elif color_type == "error":
+            self.status.setStyleSheet("color: #e74c3c; font-weight: bold; background-color: rgba(231, 76, 60, 0.12); border: 1px solid rgba(231, 76, 60, 0.25); border-radius: 6px; padding: 4px 8px;")
+        else:
+            self.status.setStyleSheet("")
+            return
+
+        if hasattr(self, "_status_timer") and self._status_timer:
+            try:
+                self._status_timer.stop()
+            except Exception:
+                pass
+            
+        from PySide6.QtCore import QTimer
+        self._status_timer = QTimer(self)
+        self._status_timer.setSingleShot(True)
+        self._status_timer.timeout.connect(lambda: self.status.setStyleSheet(""))
+        self._status_timer.start(5000)
