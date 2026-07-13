@@ -5,6 +5,8 @@ import subprocess
 import hashlib
 import unicodedata
 import re
+import time
+import threading
 from pathlib import Path
 from flask import Flask, request, jsonify, send_file, abort
 
@@ -242,10 +244,28 @@ def scan_library(root: Path):
         })
     return tracks
 
+cached_tracks = []
+
+def background_library_scanner():
+    global cached_tracks
+    while True:
+        try:
+            # Periodically scan the library directory for updates
+            new_tracks = scan_library(MUSIC_DIR)
+            cached_tracks = new_tracks
+        except Exception as e:
+            print(f"Error in background scanner: {e}", flush=True)
+        time.sleep(10)
+
 @app.route('/tracks', methods=['GET'])
 def get_tracks():
-    tracks = scan_library(MUSIC_DIR)
-    return jsonify(tracks)
+    global cached_tracks
+    if not cached_tracks:
+        try:
+            cached_tracks = scan_library(MUSIC_DIR)
+        except Exception:
+            pass
+    return jsonify(cached_tracks)
 
 @app.route('/audio/<path:filename>', methods=['GET'])
 def get_audio(filename):
@@ -339,7 +359,17 @@ def upload_file():
     dest_path = dest_dir / clean_name
     file.save(dest_path)
     
+    global cached_tracks
+    try:
+        cached_tracks = scan_library(MUSIC_DIR)
+    except Exception:
+        pass
+    
     return jsonify({'success': True, 'path': str(dest_path)})
 
 if __name__ == '__main__':
+    # Start background library scanner thread (runs every 10 seconds)
+    scanner_thread = threading.Thread(target=background_library_scanner, daemon=True)
+    scanner_thread.start()
+    
     app.run(host='0.0.0.0', port=8000)
