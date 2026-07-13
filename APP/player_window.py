@@ -11,7 +11,7 @@ import json
 import subprocess
 import threading
 
-from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QTimer, QUrl, QVariantAnimation, Signal, QObject, QEvent
+from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QTimer, QUrl, QVariantAnimation, Signal, QObject, QEvent, QThread
 try:
     from PySide6.QtDBus import QDBusConnection, QDBusMessage, QDBusObjectPath
     HAS_DBUS = True
@@ -91,6 +91,76 @@ class SoundCloudWorker(QObject):
     download_done = Signal(int, bool, str)
     stream_done = Signal(str, str, str, str)   # title, artist, virtual_path, stream_url
     stream_failed = Signal(str)
+
+
+class UploadWorker(QObject):
+    progress_changed = Signal(int, str)
+    upload_finished = Signal(int)
+    
+    def __init__(self, chosen_files, artist_name, album_name, url, language):
+        super().__init__()
+        self.chosen_files = chosen_files
+        self.artist_name = artist_name
+        self.album_name = album_name
+        self.url = url
+        self.language = language
+        self.is_cancelled = False
+        
+    def run(self):
+        import uuid
+        import urllib.request
+        from pathlib import Path
+        
+        total_files = len(self.chosen_files)
+        success_count = 0
+        
+        for i, file_path_str in enumerate(self.chosen_files):
+            if self.is_cancelled:
+                break
+                
+            file_path = Path(file_path_str)
+            msg = f"Tải lên {i+1}/{total_files}: {file_path.name}..." if self.language == "vi" else f"Uploading {i+1}/{total_files}: {file_path.name}..."
+            self.progress_changed.emit(i, msg)
+            
+            try:
+                upload_url = f"{self.url}/upload"
+                boundary = uuid.uuid4().hex
+                parts = []
+                
+                fields = {
+                    "artist": self.artist_name,
+                    "album": self.album_name
+                }
+                for name, val in fields.items():
+                    parts.append(f"--{boundary}".encode('utf-8'))
+                    parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
+                    parts.append(b'')
+                    parts.append(str(val).encode('utf-8'))
+                    
+                parts.append(f"--{boundary}".encode('utf-8'))
+                parts.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode('utf-8'))
+                parts.append(b'Content-Type: application/octet-stream')
+                parts.append(b'')
+                with open(file_path, 'rb') as f:
+                    parts.append(f.read())
+                    
+                parts.append(f"--{boundary}--".encode('utf-8'))
+                parts.append(b'')
+                
+                body = b'\r\n'.join(parts)
+                req = urllib.request.Request(upload_url, data=body)
+                req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+                req.add_header('Content-Length', str(len(body)))
+                
+                with urllib.request.urlopen(req, timeout=30) as response:
+                    response.read()
+                success_count += 1
+            except Exception as e:
+                print(f"Error uploading {file_path.name}: {e}", flush=True)
+                
+        if not self.is_cancelled:
+            self.progress_changed.emit(total_files, "Tải lên hoàn tất!" if self.language == "vi" else "Upload complete!")
+        self.upload_finished.emit(success_count)
 
 
 class PlayerWindow(QMainWindow):
@@ -3431,74 +3501,67 @@ class PlayerWindow(QMainWindow):
         artist_name = artist_input.text().strip() or "Library"
         album_name = album_input.text().strip() or "Singles"
         
-        # Upload chosen files sequentially
+        # Upload chosen files sequentially using QThread and UploadWorker with QProgressDialog
         total_files = len(chosen_files)
-        self.status.setText(f"Đang chuẩn bị tải lên {total_files} file..." if self.language == "vi" else f"Preparing to upload {total_files} files...")
         
-        def run_upload():
-            import uuid
-            import urllib.request
-            from PySide6.QtWidgets import QMessageBox
-            success_count = 0
-            for i, file_path_str in enumerate(chosen_files):
-                file_path = Path(file_path_str)
-                msg = f"Tải lên {i+1}/{total_files}: {file_path.name}..." if self.language == "vi" else f"Uploading {i+1}/{total_files}: {file_path.name}..."
-                QTimer.singleShot(0, lambda m=msg: self.status.setText(m))
-                
-                try:
-                    upload_url = f"{url}/upload"
-                    boundary = uuid.uuid4().hex
-                    parts = []
-                    
-                    fields = {
-                        "artist": artist_name,
-                        "album": album_name
-                    }
-                    for name, val in fields.items():
-                        parts.append(f"--{boundary}".encode('utf-8'))
-                        parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
-                        parts.append(b'')
-                        parts.append(str(val).encode('utf-8'))
-                        
-                    parts.append(f"--{boundary}".encode('utf-8'))
-                    parts.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode('utf-8'))
-                    parts.append(b'Content-Type: application/octet-stream')
-                    parts.append(b'')
-                    with open(file_path, 'rb') as f:
-                        parts.append(f.read())
-                        
-                    parts.append(f"--{boundary}--".encode('utf-8'))
-                    parts.append(b'')
-                    
-                    body = b'\r\n'.join(parts)
-                    req = urllib.request.Request(upload_url, data=body)
-                    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-                    req.add_header('Content-Length', str(len(body)))
-                    
-                    with urllib.request.urlopen(req, timeout=30) as response:
-                        response.read()
-                    success_count += 1
-                except Exception as e:
-                    print(f"Error uploading {file_path.name}: {e}", flush=True)
-                    
+        from PySide6.QtWidgets import QProgressDialog
+        from PySide6.QtCore import Qt
+        
+        progress_dialog = QProgressDialog(
+            "Đang chuẩn bị tải lên..." if self.language == "vi" else "Preparing upload...",
+            "Hủy" if self.language == "vi" else "Cancel",
+            0,
+            total_files,
+            self
+        )
+        progress_dialog.setWindowTitle("Tải nhạc lên Server" if self.language == "vi" else "Uploading to Server")
+        progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        progress_dialog.setMinimumDuration(0)
+        progress_dialog.setValue(0)
+        
+        worker = UploadWorker(chosen_files, artist_name, album_name, url, self.language)
+        thread = QThread(self)
+        worker.moveToThread(thread)
+        
+        def update_progress(val, msg):
+            progress_dialog.setValue(val)
+            progress_dialog.setLabelText(msg)
+            self.status.setText(msg)
+            
+        worker.progress_changed.connect(update_progress)
+        
+        def on_cancel():
+            worker.is_cancelled = True
+            self.status.setText("Đã hủy tải lên" if self.language == "vi" else "Upload cancelled")
+            
+        progress_dialog.canceled.connect(on_cancel)
+        
+        thread.started.connect(worker.run)
+        
+        def on_finished(success_count):
+            thread.quit()
+            thread.wait()
+            progress_dialog.close()
+            
             msg_done = f"Đã tải lên thành công {success_count}/{total_files} file!" if self.language == "vi" else f"Successfully uploaded {success_count}/{total_files} files!"
-            QTimer.singleShot(0, lambda m=msg_done: self.status.setText(m))
+            self.set_status_notification(msg_done, "success" if success_count == total_files else "error")
             
-            def show_done_box():
-                QMessageBox.information(
-                    self,
-                    "Tải lên hoàn tất" if self.language == "vi" else "Upload Completed",
-                    msg_done
-                )
-            QTimer.singleShot(0, show_done_box)
+            QMessageBox.information(
+                self,
+                "Tải lên hoàn tất" if self.language == "vi" else "Upload Completed",
+                msg_done
+            )
             
-            # Reload library to show new tracks if we are in server mode
             import constants
             if constants.SERVER_URL:
-                QTimer.singleShot(0, self.reload_library)
+                self.reload_library()
                 
-        import threading
-        threading.Thread(target=run_upload, daemon=True).start()
+        worker.upload_finished.connect(on_finished)
+        thread.start()
+        
+        # Keep reference to avoid garbage collection
+        self._upload_thread = thread
+        self._upload_worker = worker
 
     def set_status_notification(self, text: str, color_type: str) -> None:
         self.status.setText(text)
