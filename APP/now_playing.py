@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QVariantAnimation
+import time
+from PySide6.QtCore import QEasingCurve, QPointF, QRectF, Qt, QTimer, QUrl, QVariantAnimation
 from PySide6.QtGui import QColor, QConicalGradient, QFont, QFontMetrics, QImage, QPainter, QPainterPath, QPen, QPixmap, QLinearGradient
-from PySide6.QtMultimedia import QMediaPlayer, QVideoSink
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QVideoSink
+
+
 from PySide6.QtSvg import QSvgRenderer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
@@ -69,6 +72,14 @@ class DiscWidget(QWidget):
         if self.current_speed > 0.0:
             self.angle = (self.angle + self.current_speed) % 360
             self.update()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.timer.start()
+
+    def hideEvent(self, event) -> None:
+        super().hideEvent(event)
+        self.timer.stop()
 
     def paintEvent(self, _event) -> None:
         painter = QPainter(self)
@@ -169,15 +180,16 @@ class MiniControlButton(QToolButton):
         """,
     }
 
-    def __init__(self, kind: str, callback, primary: bool = False) -> None:
+    def __init__(self, kind: str, callback, primary: bool = False, draw_circle_bg: bool = False) -> None:
         super().__init__()
         self.kind = kind
         self.primary = primary
+        self.draw_circle_bg = draw_circle_bg
         self.icon_color = QColor("#ffffff")
         self.setObjectName("miniPlayButton" if primary else "miniControlButton")
         self.clicked.connect(callback)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.setFixedSize(54 if primary else 42, 54 if primary else 42)
+        self.setFixedSize(54 if primary else 44, 54 if primary else 44)
 
     def set_kind(self, kind: str) -> None:
         self.kind = kind
@@ -187,43 +199,67 @@ class MiniControlButton(QToolButton):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
-        # Draw circular background
-        if self.isChecked():
-            bg = QColor(255, 255, 255, 66)
-        elif self.underMouse():
-            bg = QColor(255, 255, 255, 82 if self.primary else 60)
+        if self.draw_circle_bg:
+            if self.isChecked():
+                bg = QColor(255, 255, 255, 66)
+            elif self.underMouse():
+                bg = QColor(255, 255, 255, 82 if self.primary else 60)
+            else:
+                bg = QColor(255, 255, 255, 48 if self.primary else 36)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(bg)
+            painter.drawEllipse(self.rect())
         else:
-            bg = QColor(255, 255, 255, 48 if self.primary else 36)
+            if self.isChecked():
+                bg = QColor(29, 144, 244, 60)
+                border_pen = QPen(QColor(29, 144, 244, 160), 1.4)
+            elif self.underMouse():
+                bg = QColor(255, 255, 255, 42 if self.primary else 30)
+                border_pen = QPen(QColor(255, 255, 255, 85), 1.3)
+            else:
+                bg = QColor(255, 255, 255, 24 if self.primary else 16)
+                border_pen = QPen(QColor(255, 255, 255, 38), 1.3)
 
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bg)
-        painter.drawEllipse(self.rect())
+            rect = QRectF(self.rect()).adjusted(0.7, 0.7, -0.7, -0.7)
+            painter.setPen(border_pen)
+            painter.setBrush(bg)
+            radius = self.height() / 2.0
+            painter.drawRoundedRect(rect, radius, radius)
 
         self.draw_svg_icon(painter)
 
     def draw_svg_icon(self, painter: QPainter) -> None:
-        color = self.icon_color.name()
+        if self.isChecked() and not self.draw_circle_bg:
+            color = "#1d90f4"
+            opacity = "1.0"
+        elif self.underMouse():
+            color = "#ffffff"
+            opacity = "1.0"
+        else:
+            color = "#ffffff"
+            opacity = "0.85" if not self.primary else "0.95"
+
         paths = self.ICONS.get(self.kind, self.ICONS["play"])
         if self.kind == "volume" and self.isChecked():
             paths += '<path d="M19 9l-6 6"/><path d="M13 9l6 6"/>'
         svg = f"""
         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"
-             width="24" height="24" fill="none" stroke="{color}"
-             stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"
+             width="24" height="24" fill="none" stroke="{color}" opacity="{opacity}"
+             stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"
              color="{color}">
             {paths.replace("currentColor", color)}
         </svg>
         """
         renderer = QSvgRenderer(svg.encode("utf-8"))
-        size = 26 if self.primary else 22
-        if self.kind in {"prev", "next"}:
-            size = 20
-        if self.kind == "repeat":
-            size = 20
-        if self.kind == "shuffle":
-            size = 20
+        size = 28 if self.primary else 22
+        if self.kind in {"prev", "next", "repeat", "shuffle"}:
+            size = 22
         rect = QRectF(int((self.width() - size) / 2), int((self.height() - size) / 2), size, size)
         renderer.render(painter, rect)
+
+
+
+
 
 
 class NowPlayingWindow(QWidget):
@@ -238,12 +274,21 @@ class NowPlayingWindow(QWidget):
         self.setWindowTitle(APP_NAME)
         self.setMinimumWidth(300)
 
-        # QVideoSink for manual rendering of video frames as blurred background
+        # Dedicated Muted Background Video Player (completely separate from primary audio player)
+        self.bg_video_player = QMediaPlayer(self)
+        self.bg_audio_output = QAudioOutput(self)
+        self.bg_audio_output.setMuted(True)
+        self.bg_audio_output.setVolume(0.0)
+        self.bg_video_player.setAudioOutput(self.bg_audio_output)
+
         self.video_sink = QVideoSink(self)
         self.video_sink.videoFrameChanged.connect(self.on_video_frame_changed)
-        self.window.player.setVideoOutput(self.video_sink)
+        self.bg_video_player.setVideoOutput(self.video_sink)
+        self.bg_video_player.positionChanged.connect(self._on_bg_video_position_changed)
+        self.window.player.playbackStateChanged.connect(self._on_primary_playback_state_changed)
         self.raw_video_frame = None
         self.scaled_video_frame = None
+        self._last_frame_time: float = 0.0
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(15, 18, 15, 24)
@@ -319,6 +364,14 @@ class NowPlayingWindow(QWidget):
         layout.addStretch(1)
 
     def on_video_frame_changed(self) -> None:
+        # Skip processing when widget is hidden or rate-limit to 20 FPS (50ms)
+        if not self.isVisible():
+            return
+        now = time.monotonic()
+        if now - self._last_frame_time < 0.05:
+            return
+        self._last_frame_time = now
+
         frame = self.video_sink.videoFrame()
         if not frame or not frame.isValid():
             return
@@ -340,6 +393,7 @@ class NowPlayingWindow(QWidget):
             
             # Dynamically grab the first valid non-black frame as the disc's thumbnail
             if getattr(self, "has_video_thumbnail", False) is False:
+
                 # Check if it's not a black frame (using lightness threshold of 40)
                 is_black = True
                 w, h = image.width(), image.height()
@@ -386,6 +440,67 @@ class NowPlayingWindow(QWidget):
                         y = max(0, (scaled.height() - size) // 2)
                         scaled = scaled.copy(x, y, size, size)
                     self.disc.set_disc(scaled, self.current_accent)
+
+    def _on_bg_video_position_changed(self, pos_ms: int) -> None:
+        if pos_ms >= 30000:
+            self.bg_video_player.setPosition(0)
+            if self.bg_video_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState:
+                self.bg_video_player.play()
+
+    def _on_primary_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
+        self.sync_bg_video_state()
+
+    def _get_media_url(self, track: Track) -> QUrl:
+        path_str = track.path.as_posix() if hasattr(track.path, "as_posix") else str(track.path)
+        if path_str.startswith("/server/"):
+            from constants import SERVER_URL
+            from urllib.parse import quote
+            relative_part = path_str[len("/server/"):]
+            return QUrl(f"{SERVER_URL}/audio/{quote(relative_part)}")
+        elif path_str.startswith("/online/"):
+            stream_url = self.window.online_stream_urls.get(path_str, "")
+            return QUrl(stream_url)
+        else:
+            return QUrl.fromLocalFile(path_str)
+
+    def start_bg_video(self, track: Track | None) -> None:
+        if track and str(track.path).lower().endswith(".mp4"):
+            file_url = self._get_media_url(track)
+            if self.bg_video_player.source() != file_url:
+                self.bg_video_player.setSource(file_url)
+            if self.window.player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+                self.bg_video_player.play()
+            else:
+                self.bg_video_player.pause()
+        else:
+            self.stop_bg_video()
+
+    def stop_bg_video(self) -> None:
+        self.bg_video_player.stop()
+        self.bg_video_player.setSource(QUrl())
+        self.raw_video_frame = None
+        self.scaled_video_frame = None
+        self.update()
+
+    def sync_bg_video_state(self) -> None:
+        track = self.window.current_track()
+        if not track or not str(track.path).lower().endswith(".mp4"):
+            self.stop_bg_video()
+            return
+        state = self.window.player.playbackState()
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            file_url = self._get_media_url(track)
+            if self.bg_video_player.source() != file_url:
+                self.bg_video_player.setSource(file_url)
+            self.bg_video_player.play()
+        elif state == QMediaPlayer.PlaybackState.PausedState:
+            self.bg_video_player.pause()
+        else:
+            self.bg_video_player.stop()
+
+    def update_video_loop_frame(self, position: int) -> None:
+        pass
+
 
     def paintEvent(self, event) -> None:
         # First, draw standard background (stylesheet)
@@ -456,9 +571,8 @@ class NowPlayingWindow(QWidget):
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        track = self.window.current_track()
-        if track and str(track.path).lower().endswith(".mp4"):
-            self.window.player.setVideoOutput(self.video_sink)
+        self.sync_bg_video_state()
+
 
     def refit_labels(self) -> None:
         track = self.window.current_track()
@@ -525,6 +639,7 @@ class NowPlayingWindow(QWidget):
         self.set_fitted_label(self.artist_label, f"{track.artist} · {self.window.display_album(track.album)}", 13, 10, 1)
         self.update_extra_buttons()
 
+        self._last_frame_time = 0.0
         is_video = track is not None and str(track.path).lower().endswith(".mp4")
         self.disc.setVisible(True)
         self.mini_wave.setVisible(True)
@@ -532,53 +647,85 @@ class NowPlayingWindow(QWidget):
             cover_path = self.window.track_art_path(track, allow_extract=True)
             has_real_cover = cover_path is not None and cover_path.exists()
             self.has_video_thumbnail = has_real_cover
-            self.window.player.setVideoOutput(self.video_sink)
+            self.start_bg_video(track)
         else:
-            self.raw_video_frame = None
-            self.scaled_video_frame = None
-            self.update()
+            self.stop_bg_video()
+
 
     def extract_accent_color(self, pixmap: QPixmap) -> QColor:
         if pixmap.isNull():
             return QColor("#1d90f4")
 
         image = pixmap.toImage().convertToFormat(QImage.Format.Format_RGB32).scaled(
-            28,
-            28,
+            48, 48,
             Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
+            Qt.TransformationMode.SmoothTransformation
         )
-        red = green = blue = count = 0
+        
+        hue_bins = [0] * 12
+        hue_colors = [[] for _ in range(12)]
+        all_colors = []
+
         for y in range(image.height()):
             for x in range(image.width()):
                 color = QColor(image.pixel(x, y))
-                if color.lightness() < 28 or color.lightness() > 235:
+                l = color.lightness()
+                s = color.saturation()
+                if l < 5 or l > 250:
                     continue
-                saturation_weight = max(1, color.saturation())
-                red += color.red() * saturation_weight
-                green += color.green() * saturation_weight
-                blue += color.blue() * saturation_weight
-                count += saturation_weight
+                all_colors.append(color)
+                if s >= 25:
+                    h = color.hue()
+                    if h < 0:
+                        h = 0
+                    bin_idx = min(11, int(h // 30))
+                    hue_bins[bin_idx] += (s * l)
+                    hue_colors[bin_idx].append(color)
 
-        if count <= 0:
+        best_bin = -1
+        max_score = 0
+        for i in range(12):
+            if hue_bins[i] > max_score:
+                max_score = hue_bins[i]
+                best_bin = i
+
+        if best_bin != -1 and hue_colors[best_bin]:
+            colors = hue_colors[best_bin]
+            r = sum(c.red() for c in colors) // len(colors)
+            g = sum(c.green() for c in colors) // len(colors)
+            b = sum(c.blue() for c in colors) // len(colors)
+            accent = QColor(r, g, b)
+        elif all_colors:
+            r = sum(c.red() for c in all_colors) // len(all_colors)
+            g = sum(c.green() for c in all_colors) // len(all_colors)
+            b = sum(c.blue() for c in all_colors) // len(all_colors)
+            accent = QColor(r, g, b)
+        else:
             return QColor("#1d90f4")
 
-        accent = QColor(red // count, green // count, blue // count)
-        if accent.saturation() < 55:
-            accent = QColor("#1d90f4")
-        if accent.lightness() < 74:
-            accent = accent.lighter(140)
-        if accent.lightness() > 190:
-            accent = accent.darker(135)
-        return accent
+        h, s, v, a = accent.getHsv()
+        # For dark / gray / monochrome album covers: preserve natural slate/graphite tone
+        if s < 35:
+            h = max(0, h)
+            s = max(8, min(40, s))
+            v = max(30, min(140, v))
+            return QColor.fromHsv(h, s, v, a)
+
+        if h < 0:
+            h = 208
+        s = min(255, max(110, int(s * 1.2)))
+        v = min(245, max(130, int(v * 1.1)))
+        return QColor.fromHsv(h, s, v, a)
 
     def apply_dynamic_background(self, accent: QColor) -> None:
         target_accent = accent if accent.isValid() else QColor("#1d90f4")
         target_bg = self.solid_background_color(target_accent)
-        
+
         if getattr(self, "bg_animation", None) is not None:
             self.bg_animation.stop()
-            
+            self.bg_animation.deleteLater()
+            self.bg_animation = None
+
         start_accent = self.current_accent
         start_bg = self.current_bg
         

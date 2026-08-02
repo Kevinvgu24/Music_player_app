@@ -50,13 +50,23 @@ QLabel#volumeLabel {
 QLabel#sidebarCaption {
     color: #627284;
     font-size: 11px;
-    font-weight: 850;
-    letter-spacing: 1px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
     text-transform: uppercase;
-    padding-left: 4px;
-    margin-top: 10px;
-    margin-bottom: 4px;
+    padding-left: 2px;
+    margin-top: 6px;
+    margin-bottom: 2px;
 }
+QSplitter::handle:horizontal {
+    background: #141b29;
+    width: 5px;
+    margin: 4px 1px;
+    border-radius: 2px;
+}
+QSplitter::handle:horizontal:hover {
+    background: #1d90f4;
+}
+
 QLabel#libraryPath {
     padding-left: 4px;
     font-size: 12px;
@@ -249,9 +259,34 @@ QSplitter::handle:hover {
     background: rgba(29, 144, 244, 0.3);
 }
 QFrame#playerBar {
-    background: #0a0e17;
-    border: 1px solid #1a2333;
-    border-radius: 14px;
+    background: #080c14;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: none;
+    border-left: none;
+    border-right: none;
+    border-radius: 0px;
+    margin: 0px;
+    padding: 0px;
+}
+QLabel#bottomCover {
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.05);
+}
+QLabel#bottomTitle {
+    color: #ffffff;
+    font-size: 14px;
+    font-weight: 600;
+}
+QLabel#bottomArtist {
+    color: rgba(255, 255, 255, 0.55);
+    font-size: 12px;
+    font-weight: 400;
+}
+QLabel#timeLabel {
+    color: rgba(255, 255, 255, 0.5);
+    font-size: 12px;
+    font-weight: 500;
+    font-family: monospace, sans-serif;
 }
 QWidget#nowPlayingWindow {
     background: #1b2a3a;
@@ -259,7 +294,7 @@ QWidget#nowPlayingWindow {
 }
 QLabel#miniTitle {
     color: #1d90f4;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 800;
 }
 QWidget#discWidget {
@@ -281,15 +316,13 @@ QLabel#miniTimeLabel {
 QToolButton#miniControlButton {
     background: rgba(255, 255, 255, 34);
     border: none;
-    border-radius: 21px;
+    border-radius: 22px;
     color: #ffffff;
-    min-width: 42px;
-    max-width: 42px;
-    min-height: 42px;
-    max-height: 42px;
+    min-width: 44px;
+    max-width: 44px;
+    min-height: 44px;
+    max-height: 44px;
     padding: 0px;
-    font-size: 18px;
-    font-weight: 900;
 }
 QToolButton#miniControlButton:hover {
     background: rgba(255, 255, 255, 58);
@@ -308,36 +341,42 @@ QToolButton#miniPlayButton {
     min-height: 54px;
     max-height: 54px;
     padding: 0px;
-    font-size: 22px;
-    font-weight: 900;
 }
 QToolButton#miniPlayButton:hover {
     background: rgba(255, 255, 255, 70);
 }
 QToolButton#playerButton {
-    background: transparent;
-    color: #ffffff;
-    border: none;
-    border-radius: 17px;
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.85);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
     padding: 0px;
-    min-width: 34px;
-    min-height: 34px;
-    font-size: 18px;
-    font-weight: 800;
+    min-width: 42px;
+    max-width: 42px;
+    min-height: 42px;
+    max-height: 42px;
+    font-size: 19px;
+    font-weight: 600;
 }
 QToolButton#playerButton::menu-indicator {
     image: none;
 }
 QToolButton#playerButton:hover {
-    background: #2a2a2a;
+    background: rgba(255, 255, 255, 0.16);
+    border-color: rgba(255, 255, 255, 0.30);
+    color: #ffffff;
 }
 QToolButton#playerButton:checked {
-    color: #00a8ff;
-    background: #122538;
+    color: #1d90f4;
+    background: rgba(29, 144, 244, 0.25);
+    border-color: rgba(29, 144, 244, 0.55);
 }
 QToolButton#playerButton:pressed {
-    background: #333333;
+    background: rgba(255, 255, 255, 0.22);
 }
+
+
+
 QToolButton#navRoundButton {
     background: #090909;
     color: #ffffff;
@@ -406,28 +445,29 @@ QPushButton#secondaryButton:hover {
     border-color: #3b5170;
 }
 QSlider#volumeSlider::groove:horizontal {
-    background: #252f41;
+    background: rgba(255, 255, 255, 0.15);
     height: 4px;
     border-radius: 2px;
 }
 QSlider#volumeSlider::sub-page:horizontal {
-    background: #1d90f4;
+    background: #38bdf8;
     height: 4px;
     border-radius: 2px;
 }
 QSlider#volumeSlider::add-page:horizontal {
-    background: #252f41;
+    background: rgba(255, 255, 255, 0.15);
     height: 4px;
     border-radius: 2px;
 }
 QSlider#volumeSlider::handle:horizontal {
     background: #ffffff;
-    border: 2px solid #1d90f4;
+    border: 2px solid #38bdf8;
     width: 10px;
     height: 10px;
     margin: -3px 0;
     border-radius: 5px;
 }
+
 QScrollBar:vertical {
     background: transparent;
     width: 8px;

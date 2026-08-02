@@ -10,11 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from constants import AUDIO_EXTENSIONS, COVER_CACHE, COVER_HINTS, IMAGE_EXTENSIONS
-
-# creationflags for subprocess to prevent console window popup on Windows
-SUBPROCESS_FLAGS = 0
-if sys.platform == "win32":
-    SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+from utils import SUBPROCESS_FLAGS
+from fast_core import search_text_fast, scan_audio_files_fast
 
 
 
@@ -36,14 +33,11 @@ def readable_title(path: Path) -> str:
 
 
 def search_text(value: object) -> str:
-    text = str(value).casefold().replace("đ", "d")
-    normalized = unicodedata.normalize("NFD", text)
-    no_marks = "".join(char for char in normalized if unicodedata.category(char) != "Mn")
-    spaced = "".join(char if char.isalnum() else " " for char in no_marks)
-    return " ".join(spaced.split())
+    return search_text_fast(value)
 
 
 _folder_art_cache: dict[Path, Path | None] = {}
+_FOLDER_ART_CACHE_MAX = 500
 
 def find_folder_art(path: Path, root: Path) -> Path | None:
     current = path.parent
@@ -77,17 +71,26 @@ def find_folder_art(path: Path, root: Path) -> Path | None:
             break
         curr = curr.parent
 
+    # Evict oldest entries when cache exceeds max size
+    if len(_folder_art_cache) >= _FOLDER_ART_CACHE_MAX:
+        try:
+            del _folder_art_cache[next(iter(_folder_art_cache))]
+        except StopIteration:
+            pass
     _folder_art_cache[current] = art_path
     return art_path
 
 
-def embedded_art_cache_path(path: Path) -> Path:
-    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+
+def embedded_art_cache_path(path: Path | str) -> Path:
+    path_str = path.as_posix() if hasattr(path, "as_posix") else str(path).replace("\\", "/")
+    digest = hashlib.sha1(path_str.encode("utf-8")).hexdigest()
     return COVER_CACHE / f"{digest}.jpg"
 
 
-def embedded_no_art_path(path: Path) -> Path:
-    digest = hashlib.sha1(str(path).encode("utf-8")).hexdigest()
+def embedded_no_art_path(path: Path | str) -> Path:
+    path_str = path.as_posix() if hasattr(path, "as_posix") else str(path).replace("\\", "/")
+    digest = hashlib.sha1(path_str.encode("utf-8")).hexdigest()
     return COVER_CACHE / f"{digest}.noart"
 
 
@@ -106,30 +109,52 @@ def extract_embedded_art(path: Path) -> Path | None:
         return None
 
     try:
-        result = subprocess.run(
-            [
-                ffmpeg,
-                "-y",
-                "-loglevel",
-                "error",
-                "-i",
-                str(path),
-                "-an",
-                "-vframes",
-                "1",
-                str(cache_path),
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            creationflags=SUBPROCESS_FLAGS,
-        )
+        if path.suffix.lower() == ".mp4":
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-ss",
+                    "00:00:01",
+                    "-i",
+                    str(path),
+                    "-an",
+                    "-vframes",
+                    "1",
+                    str(cache_path),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=SUBPROCESS_FLAGS,
+            )
+        if not cache_path.exists() or cache_path.stat().st_size == 0:
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-an",
+                    "-vframes",
+                    "1",
+                    str(cache_path),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                creationflags=SUBPROCESS_FLAGS,
+            )
     except OSError:
         cache_path.unlink(missing_ok=True)
         no_art_path.touch()
         return None
 
-    if result.returncode == 0 and cache_path.exists() and cache_path.stat().st_size > 0:
+    if cache_path.exists() and cache_path.stat().st_size > 0:
         no_art_path.unlink(missing_ok=True)
         return cache_path
     cache_path.unlink(missing_ok=True)
@@ -305,17 +330,18 @@ def scan_library(root: Path) -> list[Track]:
     _folder_art_cache.clear()
 
     tracks: list[Track] = []
-    audio_files: list[Path] = []
-    
-    # Traverse the directory tree using os.walk (fast scandir on Windows)
-    try:
-        for dirpath, _, filenames in os.walk(root):
-            for filename in filenames:
-                ext = os.path.splitext(filename)[1].lower()
-                if ext in AUDIO_EXTENSIONS:
-                    audio_files.append(Path(dirpath) / filename)
-    except OSError:
-        pass
+    audio_files: list[Path] | None = scan_audio_files_fast(root)
+
+    if audio_files is None:
+        audio_files = []
+        try:
+            for dirpath, _, filenames in os.walk(root):
+                for filename in filenames:
+                    ext = os.path.splitext(filename)[1].lower()
+                    if ext in AUDIO_EXTENSIONS:
+                        audio_files.append(Path(dirpath) / filename)
+        except OSError:
+            pass
 
     # Sort files case-insensitively
     audio_files.sort(key=lambda item: str(item).casefold())
@@ -342,18 +368,29 @@ def scan_library(root: Path) -> list[Track]:
     return tracks
 
 
+_custom_covers_cache: dict[str, str] | None = None
+
+
 def get_custom_covers_map() -> dict[str, str]:
+    global _custom_covers_cache
+    if _custom_covers_cache is not None:
+        return _custom_covers_cache
     import json
     json_path = COVER_CACHE / "custom_covers.json"
     if not json_path.exists():
-        return {}
+        _custom_covers_cache = {}
+        return _custom_covers_cache
     try:
-        return json.loads(json_path.read_text(encoding="utf-8"))
+        _custom_covers_cache = json.loads(json_path.read_text(encoding="utf-8"))
+        return _custom_covers_cache
     except Exception:
-        return {}
+        _custom_covers_cache = {}
+        return _custom_covers_cache
 
 
 def save_custom_covers_map(mapping: dict[str, str]) -> None:
+    global _custom_covers_cache
+    _custom_covers_cache = dict(mapping)
     import json
     COVER_CACHE.mkdir(exist_ok=True)
     json_path = COVER_CACHE / "custom_covers.json"
@@ -381,4 +418,19 @@ def set_custom_cover_path(track_path: Path, image_path: Path | None) -> None:
     else:
         mapping[str(track_path)] = str(image_path)
     save_custom_covers_map(mapping)
+
+
+def get_file_signature(path: Path) -> dict:
+    if not path.exists() or not path.is_file():
+        return {}
+    try:
+        size = path.stat().st_size
+        mtime = path.stat().st_mtime
+        return {
+            "size": size,
+            "mtime": mtime,
+            "filename": path.name
+        }
+    except OSError:
+        return {}
 

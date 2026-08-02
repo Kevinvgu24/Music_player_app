@@ -87,7 +87,18 @@ TRANSLATIONS = {
         "sync_complete": "Đồng bộ thành công! Đã tải lên {count} bài hát mới.",
         "sync_no_new": "Thư viện đã được đồng bộ, không có bài hát mới.",
         "sync_failed": "Đồng bộ thất bại: {error}",
+        "video_preview_on": "Lặp 30s Video Nền: Bật",
+        "video_preview_off": "Lặp 30s Video Nền: Tắt",
+        "video_preview_tooltip": "Bật/Tắt lặp 30 giây đầu của Video MP4 làm hình nền để tiết kiệm tài nguyên",
+        "video_preview_status": "▶ Lặp 30s video nền: {title}",
+        "favorites_album": "⭐ Yêu thích",
+        "favorites_tooltip": "Đánh dấu bài hát yêu thích",
+        "starred_toast": "Đã thêm vào bài hát yêu thích ⭐",
+        "unstarred_toast": "Đã xóa khỏi bài hát yêu thích",
     },
+
+
+
     "en": {
         "library_menu": "Library",
         "choose_library": "Choose Music Folder",

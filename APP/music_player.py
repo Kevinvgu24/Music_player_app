@@ -11,9 +11,18 @@ from player_window import PlayerWindow
 
 
 def main() -> int:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+    if sys.stdout is not None and hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(line_buffering=True)
+        except Exception:
+            pass
+    if sys.stderr is not None and hasattr(sys.stderr, "reconfigure"):
+        try:
+            sys.stderr.reconfigure(line_buffering=True)
+        except Exception:
+            pass
     app = QApplication(sys.argv)
+
     app.setApplicationName(APP_NAME)
     if raise_existing_instance():
         return 0

@@ -14,7 +14,18 @@ class SeekSlider(QSlider):
     def __init__(self, orientation: Qt.Orientation, parent=None) -> None:
         super().__init__(orientation, parent)
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, False)
-        self.setFixedHeight(18)
+        self.setFixedHeight(14)
+        self.accent_color = QColor("#2b76b9")
+
+    def set_accent(self, color: QColor) -> None:
+        if isinstance(color, QColor):
+            h, s, v, a = color.getHsv()
+            if h < 0:
+                h = 208
+            muted_s = min(150, max(50, int(s * 0.55)))
+            muted_v = min(190, max(100, int(v * 0.75)))
+            self.accent_color = QColor.fromHsv(h, muted_s, muted_v, a)
+            self.update()
 
     def paintEvent(self, _event) -> None:
         if self.orientation() != Qt.Orientation.Horizontal:
@@ -24,8 +35,8 @@ class SeekSlider(QSlider):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
-        handle_radius = 5
-        track_height = 4
+        handle_radius = 4
+        track_height = 3
         left = handle_radius
         right = self.width() - handle_radius
         center_y = self.height() / 2
@@ -39,17 +50,19 @@ class SeekSlider(QSlider):
 
         track_rect = QRectF(left, center_y - track_height / 2, track_width, track_height)
         painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(QColor("#252f41"))
+        painter.setBrush(QColor(255, 255, 255, 25))
         painter.drawRoundedRect(track_rect, track_height / 2, track_height / 2)
 
         if handle_x > left:
             played_rect = QRectF(left, center_y - track_height / 2, handle_x - left, track_height)
-            painter.setBrush(QColor("#1d90f4"))
+            painter.setBrush(self.accent_color)
             painter.drawRoundedRect(played_rect, track_height / 2, track_height / 2)
 
-        painter.setBrush(QColor("#ffffff"))
+        painter.setBrush(QColor(255, 255, 255, 210))
         painter.drawEllipse(QRectF(handle_x - handle_radius, center_y - handle_radius, handle_radius * 2, handle_radius * 2))
         painter.end()
+
+
 
 
 class MusicVisualizer(QWidget):

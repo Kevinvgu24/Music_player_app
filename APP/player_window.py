@@ -3,6 +3,8 @@ from __future__ import annotations
 import hashlib
 import random
 import sys
+import time
+from collections import OrderedDict
 from pathlib import Path
 import urllib.parse
 
@@ -10,6 +12,8 @@ import urllib.parse
 import json
 import subprocess
 import threading
+from favorites import load_local_favorites, save_local_favorites, fetch_favorites_from_server, sync_favorites_to_server, load_custom_playlists, save_custom_playlists
+from favorites_popup import FavoritesPopup
 
 from PySide6.QtCore import QEasingCurve, QPoint, QRectF, QSize, Qt, QTimer, QUrl, QVariantAnimation, Signal, QObject, QEvent, QThread
 try:
@@ -35,6 +39,7 @@ from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer, QMediaDevices
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QCompleter,
     QFileDialog,
     QFrame,
     QGraphicsDropShadowEffect,
@@ -60,6 +65,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+
 from constants import APP_NAME, DEFAULT_LIBRARY
 from i18n import TRANSLATIONS
 from library import (
@@ -76,7 +82,8 @@ from library import (
 )
 from mpris import MprisPlayerAdaptor, MprisRootAdaptor
 from now_playing import MiniControlButton, NowPlayingWindow
-from utils import format_ms
+from utils import format_ms, safe_filename
+from soundcloud_handler import search_soundcloud, get_stream_url, download_track
 from widgets import SeekSlider, MusicVisualizer
 
 from audio_monitor import AudioFocusMonitor
@@ -99,14 +106,20 @@ class SoundCloudWorker(QObject):
 class PlayerWindow(QMainWindow):
     reload_finished = Signal(list, str)
     reload_failed = Signal(list, str, str)
+    server_cover_fetched = Signal(object)
 
     def __init__(self) -> None:
         super().__init__()
+        self.server_cover_fetched.connect(self.register_extracted_cover)
         self.library_root = DEFAULT_LIBRARY
         self.tracks: list[Track] = []
         self.visible_tracks: list[Track] = []
-        self.art_cache: dict[tuple[str, int], QIcon] = {}
-        self.pixmap_cache: dict[tuple[str, int], QPixmap] = {}
+        # LRU caches: bounded to 300 entries to prevent unbounded RAM growth
+        _MAX_CACHE = 300
+        self.art_cache: OrderedDict[tuple[str, int], QIcon] = OrderedDict()
+        self.pixmap_cache: OrderedDict[tuple[str, int], QPixmap] = OrderedDict()
+        self._ART_CACHE_MAX = _MAX_CACHE
+        self._PIXMAP_CACHE_MAX = _MAX_CACHE
         self.language = "vi"
         self.mpris_available = False
         self.current_index = -1
@@ -117,7 +130,10 @@ class PlayerWindow(QMainWindow):
         self.is_user_seeking = False
         self.shuffle_enabled = False
         self.repeat_enabled = False
-        self.liked_tracks: set[Path] = set()
+        self.video_preview_mode = True
+        self.video_preview_limit_ms = 30000
+        self.liked_tracks: set[str] = set(load_local_favorites())
+        self.custom_playlists: dict[str, set[str]] = load_custom_playlists()
         self.online_stream_urls = {}
         self.online_results = []
         
@@ -199,6 +215,15 @@ class PlayerWindow(QMainWindow):
         # Install global event filter for keyboard shortcuts
         QApplication.instance().installEventFilter(self)
 
+        self.search_debounce_timer = QTimer(self)
+        self.search_debounce_timer.setSingleShot(True)
+        self.search_debounce_timer.setInterval(50)
+        self.search_debounce_timer.timeout.connect(lambda: self.apply_filter(switch_page=False))
+
+        self.update_search_completers()
+
+
+
     def tr(self, key: str, **kwargs) -> str:
         text = TRANSLATIONS[self.language].get(key, TRANSLATIONS["vi"].get(key, key))
         return text.format(**kwargs) if kwargs else text
@@ -260,6 +285,31 @@ class PlayerWindow(QMainWindow):
                 return True
 
         return super().eventFilter(watched, event)
+
+    def _update_sidebar_max_width(self) -> None:
+        if hasattr(self, "sidebar_widget"):
+            max_w = max(180, int(self.width() * 0.25))
+            self.sidebar_widget.setMaximumWidth(max_w)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._update_sidebar_max_width()
+
+    def _on_folder_item_clicked(self, item: QListWidgetItem) -> None:
+        if getattr(self, "_last_clicked_folder_item", None) == item:
+            self.folder_list.setCurrentItem(None)
+            self._last_clicked_folder_item = None
+            self.artist_changed()
+        else:
+            self._last_clicked_folder_item = item
+
+    def _on_album_item_clicked(self, item: QListWidgetItem) -> None:
+        if getattr(self, "_last_clicked_album_item", None) == item:
+            self.album_list.setCurrentItem(None)
+            self._last_clicked_album_item = None
+            self.apply_filter()
+        else:
+            self._last_clicked_album_item = item
 
     def update_static_texts(self) -> None:
         self.library_menu.setTitle(self.tr("library_menu"))
@@ -359,21 +409,24 @@ class PlayerWindow(QMainWindow):
         self.root_widget = QWidget()
         self.root_widget.setObjectName("appRoot")
         main = QVBoxLayout(self.root_widget)
-        main.setContentsMargins(12, 12, 12, 0)
-        main.setSpacing(12)
+        main.setContentsMargins(0, 0, 0, 0)
+        main.setSpacing(0)
+
 
         self.path_label = QLabel()
         self.path_label.setObjectName("libraryPath")
         self.path_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.search = QLineEdit()
         self.search.setObjectName("songSearch")
-        self.search.textChanged.connect(self.apply_filter)
+        self.search.textChanged.connect(lambda _text: self.search_debounce_timer.start(50))
+
 
         self.main_splitter = QSplitter(Qt.Orientation.Horizontal)
         self.main_splitter.setObjectName("mainSplitter")
         self.sidebar_widget = QWidget()
         self.sidebar_widget.setObjectName("sidebar")
-        self.sidebar_widget.setFixedWidth(190)
+        self.sidebar_widget.setMinimumWidth(180)
+        self._update_sidebar_max_width()
         folder_layout = QVBoxLayout(self.sidebar_widget)
         folder_layout.setContentsMargins(8, 16, 8, 16)
         folder_layout.setSpacing(12)
@@ -404,14 +457,20 @@ class PlayerWindow(QMainWindow):
         self.sidebar_caption.setObjectName("sidebarCaption")
         self.artist_search = QLineEdit()
         self.artist_search.setObjectName("artistSearch")
-        self.artist_search.textChanged.connect(self.refresh_artist_filter)
+        self.artist_search.textChanged.connect(lambda _text: self.search_debounce_timer.start(50))
+
         self.folder_list = QListWidget()
+        self.folder_list.itemClicked.connect(self._on_folder_item_clicked)
         self.folder_list.currentItemChanged.connect(self.artist_changed)
         self.album_caption = QLabel()
         self.album_caption.setObjectName("sidebarCaption")
         self.album_list = QListWidget()
-        self.album_list.setMinimumHeight(150)
+        self.album_list.setMinimumHeight(120)
+        self.album_list.itemClicked.connect(self._on_album_item_clicked)
         self.album_list.currentItemChanged.connect(self.apply_filter)
+        self.album_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.album_list.customContextMenuRequested.connect(self._show_album_list_context_menu)
+
         self.language_button = QPushButton()
         self.language_button.setObjectName("languageButton")
         self.language_button.clicked.connect(self.toggle_language)
@@ -483,7 +542,7 @@ class PlayerWindow(QMainWindow):
         self.hero_rescan_button = QPushButton()
         self.hero_rescan_button.setObjectName("secondaryButton")
         self.hero_rescan_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload))
-        self.hero_rescan_button.clicked.connect(self.reload_library)
+        self.hero_rescan_button.clicked.connect(self.check_for_updates)
         self.hero_folder_button = QPushButton()
         self.hero_folder_button.setObjectName("secondaryButton")
         self.hero_folder_button.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
@@ -563,15 +622,26 @@ class PlayerWindow(QMainWindow):
         self.main_splitter.setCollapsible(1, False)
         self.main_splitter.setStretchFactor(0, 0)
         self.main_splitter.setStretchFactor(1, 1)
-        main.addWidget(self.main_splitter, 1)
+        init_sidebar_w = min(220, int(self.width() * 0.22))
+        self.main_splitter.setSizes([init_sidebar_w, max(500, self.width() - init_sidebar_w)])
+
+        splitter_container = QWidget()
+        splitter_layout = QVBoxLayout(splitter_container)
+        splitter_layout.setContentsMargins(12, 10, 12, 6)
+        splitter_layout.setSpacing(0)
+        splitter_layout.addWidget(self.main_splitter)
+        main.addWidget(splitter_container, 1)
 
         self.player_bar = QFrame()
         self.player_bar.setObjectName("playerBar")
-        self.player_bar.setFrameShape(QFrame.Shape.StyledPanel)
-        self.player_bar.setMaximumHeight(86)
+        self.player_bar.setFrameShape(QFrame.Shape.NoFrame)
+        self.player_bar.setMaximumHeight(88)
         player_layout = QHBoxLayout(self.player_bar)
-        player_layout.setContentsMargins(14, 8, 14, 8)
-        player_layout.setSpacing(18)
+        player_layout.setContentsMargins(16, 8, 16, 8)
+        player_layout.setSpacing(16)
+
+
+
 
         self.playbar_info_container = QWidget()
         self.playbar_info_container.setObjectName("playbarInfoContainer")
@@ -583,28 +653,30 @@ class PlayerWindow(QMainWindow):
         self.bottom_cover.setObjectName("bottomCover")
         self.bottom_cover.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.bottom_cover.setScaledContents(True)
-        self.bottom_cover.setFixedSize(46, 46)
+        self.bottom_cover.setFixedSize(50, 50)
 
         bottom_text = QVBoxLayout()
-        bottom_text.setSpacing(1)
+        bottom_text.setSpacing(2)
         bottom_text.setContentsMargins(0, 0, 0, 0)
         self.bottom_title = QLabel()
         self.bottom_title.setObjectName("bottomTitle")
-        self.bottom_title.setWordWrap(True)
+        self.bottom_title.setWordWrap(False)
         self.bottom_title.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.bottom_title.setFixedHeight(36)
-        self.bottom_title.setMinimumWidth(170)
+        self.bottom_title.setFixedHeight(24)
+        self.bottom_title.setMinimumWidth(160)
         self.bottom_artist = QLabel()
         self.bottom_artist.setObjectName("bottomArtist")
-        self.bottom_artist.setWordWrap(True)
+        self.bottom_artist.setWordWrap(False)
         self.bottom_artist.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        self.bottom_artist.setFixedHeight(16)
-        self.bottom_artist.setMinimumWidth(170)
+        self.bottom_artist.setFixedHeight(18)
+        self.bottom_artist.setMinimumWidth(160)
+
         self.now_playing = QLabel()
         self.now_playing.setObjectName("nowPlaying")
         self.now_playing.setVisible(False)
         bottom_text.addWidget(self.bottom_title)
         bottom_text.addWidget(self.bottom_artist)
+
 
         info_layout.addWidget(self.bottom_cover)
         info_layout.addLayout(bottom_text, 1)
@@ -635,6 +707,10 @@ class PlayerWindow(QMainWindow):
         self.shuffle_button = self._player_icon_button("shuffle")
         self.shuffle_button.setCheckable(True)
         self.shuffle_button.clicked.connect(self.toggle_shuffle)
+        self.video_preview_button = self._text_tool_button("30s", self.toggle_video_preview)
+        self.video_preview_button.setCheckable(True)
+        self.video_preview_button.setChecked(self.video_preview_mode)
+        self.video_preview_button.setToolTip(self.tr("video_preview_tooltip"))
         buttons.addStretch(1)
         buttons.addWidget(self.shuffle_button, 0, Qt.AlignmentFlag.AlignVCenter)
         buttons.addWidget(self.prev_button, 0, Qt.AlignmentFlag.AlignVCenter)
@@ -672,10 +748,8 @@ class PlayerWindow(QMainWindow):
 
         self.queue_button = self._text_tool_button("☰", self.focus_track_table)
         self.queue_button.setToolTip("Di toi danh sach bai hat")
-        self.queue_button.setStyleSheet("QToolButton#playerButton { font-size: 22px; }")
         self.device_button = self._text_tool_button("⌂", self.choose_library)
         self.device_button.setToolTip("Chon thu muc nhac")
-        self.device_button.setStyleSheet("QToolButton#playerButton { font-size: 22px; }")
         self.compact_button = self._text_tool_button("▣", self.toggle_now_playing)
         self.compact_button.setToolTip("Mo cua so dang phat")
         self.fullscreen_button = self._text_tool_button("⛶", self.toggle_fullscreen_view)
@@ -691,7 +765,7 @@ class PlayerWindow(QMainWindow):
         self.volume.setCursor(Qt.CursorShape.PointingHandCursor)
         self.volume.setRange(0, 100)
         self.volume.setValue(80)
-        self.volume.setFixedWidth(120)
+        self.volume.setFixedWidth(90)
         self.volume.valueChanged.connect(self.set_volume)
 
         volume_controls.addStretch(1)
@@ -705,10 +779,11 @@ class PlayerWindow(QMainWindow):
         player_layout.addLayout(track_info, 4)
         player_layout.addLayout(center_controls, 4)
         player_layout.addLayout(volume_controls, 3)
-        content_layout.addWidget(self.player_bar)
+        main.addWidget(self.player_bar, 0)
+
 
         status_bar_layout = QHBoxLayout()
-        status_bar_layout.setContentsMargins(10, 0, 10, 4)
+        status_bar_layout.setContentsMargins(14, 2, 14, 4)
         
         self.status = QLabel()
         self.status.setObjectName("statusLabel")
@@ -718,6 +793,7 @@ class PlayerWindow(QMainWindow):
         
         status_bar_layout.addWidget(self.status, 1)
         status_bar_layout.addWidget(self.connection_status_label)
+
         
         main.addLayout(status_bar_layout)
         self.setCentralWidget(self.root_widget)
@@ -737,23 +813,26 @@ class PlayerWindow(QMainWindow):
         button.setObjectName("playerButton")
         button.setText(text)
         button.clicked.connect(lambda _checked=False, cb=callback: cb() if cb else None)
-        button.setFixedSize(34, 34)
+        button.setFixedSize(42, 42)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         return button
 
     def _player_text_button(self, text: str, callback=None) -> QToolButton:
         button = self._text_tool_button(text, callback)
         button.setObjectName("playerControlButton")
-        button.setFixedSize(36, 36)
+        button.setFixedSize(42, 42)
         button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         button.setAutoRaise(False)
         return button
 
     def _player_icon_button(self, kind: str, callback=None, primary: bool = False) -> MiniControlButton:
-        button = MiniControlButton(kind, callback or (lambda: None), primary)
+        button = MiniControlButton(kind, callback or (lambda: None), primary, draw_circle_bg=False)
         button.setObjectName("playerPlayIconButton" if primary else "playerIconButton")
-        button.setFixedSize(52 if primary else 36, 52 if primary else 36)
+        button.setFixedSize(54 if primary else 44, 54 if primary else 44)
         return button
+
+
+
 
     def go_home(self) -> None:
         self.search.clear()
@@ -784,28 +863,190 @@ class PlayerWindow(QMainWindow):
         else:
             self.showFullScreen()
 
+    def open_star_popup_for_track(self, track: Track, source_widget: QWidget) -> None:
+        popup = FavoritesPopup(str(track.path), track.title, self)
+        popup.show_near_widget(source_widget)
+
     def toggle_like_current(self) -> None:
         track = self.current_track() or self.last_track
         if track is None:
             self.like_button.setChecked(False)
             return
-        if track.path in self.liked_tracks:
-            self.liked_tracks.remove(track.path)
-        else:
-            self.liked_tracks.add(track.path)
-        self.update_like_button(track)
+        self.open_star_popup_for_track(track, self.like_button)
+
+    def on_favorites_updated(self) -> None:
+        self.update_like_button()
+        if hasattr(self, "visible_tracks") and hasattr(self, "track_table"):
+            for row, track in enumerate(self.visible_tracks):
+                widget = self.track_table.cellWidget(row, 0)
+                if widget is not None:
+                    star_btn = widget.findChild(QToolButton, "rowStarButton")
+                    if star_btn is not None:
+                        is_liked = str(track.path) in self.liked_tracks
+                        star_btn.setText("★" if is_liked else "☆")
+                        star_btn.setToolTip("Xóa khỏi yêu thích" if is_liked else "Thêm vào yêu thích")
+                        star_btn.setStyleSheet(
+                            "QToolButton { border: none; background: transparent; color: #f5c518; font-size: 16px; font-weight: 900; padding: 2px; }"
+                            if is_liked
+                            else "QToolButton { border: none; background: transparent; color: rgba(255, 255, 255, 0.35); font-size: 16px; padding: 2px; }"
+                        )
+
+        self.populate_albums()
+        album_item = self.album_list.currentItem()
+        selected_album = album_item.data(Qt.ItemDataRole.UserRole) if album_item else ""
+        if selected_album == "__FAVORITES__":
+            self.apply_filter(switch_page=False)
+
+    def on_custom_playlists_updated(self) -> None:
+        self.populate_albums()
+        album_item = self.album_list.currentItem()
+        selected_album = album_item.data(Qt.ItemDataRole.UserRole) if album_item else ""
+        if selected_album and selected_album.startswith("__CUSTOM_PLAYLIST__"):
+            self.apply_filter(switch_page=False)
+
+    def delete_custom_playlist(self, name: str) -> None:
+        reply = QMessageBox.question(
+            self,
+            "Xác nhận xóa Album",
+            f"Bạn có chắc chắn muốn xóa Album ngắn '{name}' không?\n(Các bài hát trong Album vẫn được giữ nguyên trong Thư viện gốc)",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            if name in self.custom_playlists:
+                del self.custom_playlists[name]
+                from favorites import save_custom_playlists
+                save_custom_playlists(self.custom_playlists)
+                self.on_custom_playlists_updated()
+
+    def remove_track_from_custom_playlist(self, track: Track, playlist_name: str) -> None:
+        path_str = str(track.path)
+        if playlist_name in self.custom_playlists:
+            self.custom_playlists[playlist_name].discard(path_str)
+            from favorites import save_custom_playlists
+            save_custom_playlists(self.custom_playlists)
+            self.on_custom_playlists_updated()
+
+    def _show_album_list_context_menu(self, pos: QPoint) -> None:
+        item = self.album_list.itemAt(pos)
+        if not item:
+            return
+        data = item.data(Qt.ItemDataRole.UserRole)
+        if not data or not str(data).startswith("__CUSTOM_PLAYLIST__"):
+            return
+
+        pl_name = str(data)[len("__CUSTOM_PLAYLIST__"):]
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: #0f172a; color: #ffffff; border: 1px solid #1e293b; border-radius: 8px; padding: 4px; }
+            QMenu::item { padding: 8px 16px; border-radius: 4px; }
+            QMenu::item:selected { background: #ef4444; color: #ffffff; }
+        """)
+
+        del_action = QAction(f"🗑 Xóa Album Ngắn '{pl_name}'", self)
+        del_action.triggered.connect(lambda: self.delete_custom_playlist(pl_name))
+        menu.addAction(del_action)
+        menu.exec(self.album_list.mapToGlobal(pos))
+
+    def show_track_context_menu(self, pos: QPoint) -> None:
+        row = self.track_table.rowAt(pos.y())
+        if row < 0 or row >= len(self.visible_tracks):
+            return
+
+        track = self.visible_tracks[row]
+        path_str = str(track.path)
+
+        album_item = self.album_list.currentItem()
+        selected_album_data = album_item.data(Qt.ItemDataRole.UserRole) if album_item else ""
+
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu { background: #0f172a; color: #ffffff; border: 1px solid #1e293b; border-radius: 8px; padding: 4px; }
+            QMenu::item { padding: 8px 16px; border-radius: 4px; }
+            QMenu::item:selected { background: #1d90f4; color: #ffffff; }
+        """)
+
+        play_action = QAction("▶ Phát bài hát này", self)
+        play_action.triggered.connect(lambda: self.play_track(track))
+        menu.addAction(play_action)
+
+        menu.addSeparator()
+
+        # Favorite action
+        is_liked = path_str in self.liked_tracks
+        fav_text = "★ Bỏ Yêu thích (Mặc định)" if is_liked else "☆ Thêm vào Yêu thích (Mặc định)"
+        fav_action = QAction(fav_text, self)
+        def _toggle_fav():
+            if is_liked:
+                self.liked_tracks.discard(path_str)
+            else:
+                self.liked_tracks.add(path_str)
+            from favorites import save_local_favorites
+            save_local_favorites(self.liked_tracks)
+            self.on_favorites_updated()
+        fav_action.triggered.connect(_toggle_fav)
+        menu.addAction(fav_action)
+
+        # Star / Album Popup Action
+        add_album_action = QAction("📁 Thêm/Quản lý Album ngắn...", self)
+        cell = self.track_table.cellWidget(row, 0)
+        anchor_btn = cell.findChild(QToolButton, "rowStarButton") if cell else self.track_table
+        add_album_action.triggered.connect(lambda: self.open_star_popup_for_track(track, anchor_btn))
+        menu.addAction(add_album_action)
+
+        # Remove action if currently viewing a Custom Album
+        if selected_album_data and selected_album_data.startswith("__CUSTOM_PLAYLIST__"):
+            curr_pl_name = selected_album_data[len("__CUSTOM_PLAYLIST__"):]
+            menu.addSeparator()
+            remove_action = QAction(f"❌ Loại bỏ khỏi Album '{curr_pl_name}'", self)
+            remove_action.triggered.connect(lambda: self.remove_track_from_custom_playlist(track, curr_pl_name))
+            menu.addAction(remove_action)
+
+        # Submenu if track belongs to other custom playlists
+        member_playlists = [p_name for p_name, t_set in self.custom_playlists.items() if path_str in t_set]
+        if member_playlists and not (selected_album_data and selected_album_data.startswith("__CUSTOM_PLAYLIST__")):
+            menu.addSeparator()
+            remove_sub = menu.addMenu("❌ Loại bỏ khỏi Album")
+            remove_sub.setStyleSheet("""
+                QMenu { background: #0f172a; color: #ffffff; border: 1px solid #1e293b; border-radius: 8px; padding: 4px; }
+                QMenu::item { padding: 8px 16px; border-radius: 4px; }
+                QMenu::item:selected { background: #ef4444; color: #ffffff; }
+            """)
+            for p_name in member_playlists:
+                act = QAction(f"Loại khỏi '{p_name}'", self)
+                act.triggered.connect(lambda _chk=False, pn=p_name: self.remove_track_from_custom_playlist(track, pn))
+                remove_sub.addAction(act)
+
+        menu.exec(self.track_table.mapToGlobal(pos))
+
 
     def update_like_button(self, track: Track | None = None) -> None:
         track = track or self.current_track() or self.last_track
-        liked = bool(track and track.path in self.liked_tracks)
+        liked = bool(track and str(track.path) in self.liked_tracks)
         self.like_button.setChecked(liked)
-        self.like_button.setText("✓" if liked else "+")
+        self.like_button.setText("★" if liked else "☆")
+        if liked:
+            self.like_button.setStyleSheet("QToolButton#playerButton { color: #f5c518; font-size: 20px; font-weight: 900; }")
+        else:
+            self.like_button.setStyleSheet("QToolButton#playerButton { color: #ffffff; font-size: 20px; }")
 
     def toggle_repeat(self) -> None:
         self.repeat_enabled = not self.repeat_enabled
         self.repeat_button.setChecked(self.repeat_enabled)
         if hasattr(self, "now_playing_window"):
             self.now_playing_window.update_extra_buttons()
+
+    def toggle_video_preview(self) -> None:
+        self.video_preview_mode = not self.video_preview_mode
+        self.video_preview_button.setChecked(self.video_preview_mode)
+        current = self.current_track()
+        if current and str(current.path).lower().endswith(".mp4"):
+            if self.video_preview_mode:
+                self.status.setText(self.tr("video_preview_status", title=current.title))
+            else:
+                self.status.setText(self.tr("now_playing", title=current.title, artist=current.artist, album=self.display_album(current.album)))
+                if hasattr(self, "now_playing_window") and self.now_playing_window is not None:
+                    self.player.setVideoOutput(self.now_playing_window.video_sink)
 
     def _apply_effects(self) -> None:
         self.cover_frame.setGraphicsEffect(self._shadow(34, QColor(0, 0, 0, 170), 0, 12))
@@ -1041,8 +1282,10 @@ class PlayerWindow(QMainWindow):
         self._detect_new_tracks()
         self.populate_folders()
         self.populate_albums()
+        self.update_search_completers()
         self.apply_filter(switch_page=False)
         self.emit_mpris_properties("Metadata", "CanPlay", "CanGoNext", "CanGoPrevious")
+
 
 
     def _detect_new_tracks(self) -> None:
@@ -1121,18 +1364,81 @@ class PlayerWindow(QMainWindow):
         else:
             self.path_label.setText(self.tr("library_path", path=self.library_root))
 
+    def update_search_completers(self) -> None:
+
+        if not hasattr(self, "search") or not hasattr(self, "artist_search"):
+            return
+
+        song_suggestions = set()
+        artist_suggestions = set()
+
+        for track in self.tracks:
+            if track.path.as_posix().startswith("/online/"):
+                continue
+            if track.title:
+                song_suggestions.add(track.title)
+                if track.artist and track.artist != "Library":
+                    song_suggestions.add(f"{track.title} - {track.artist}")
+            if track.artist and track.artist != "Library":
+                song_suggestions.add(track.artist)
+                artist_suggestions.add(track.artist)
+
+
+        # 1. Song Completer
+        song_list = sorted(list(song_suggestions), key=lambda s: search_text(s))
+        song_completer = QCompleter(song_list, self.search)
+        song_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        song_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        song_completer.setMaxVisibleItems(10)
+
+        song_popup = song_completer.popup()
+        song_popup.setStyleSheet("""
+            QAbstractItemView {
+                background-color: #0f172a;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 4px;
+                selection-background-color: #1e293b;
+                selection-color: #f5c518;
+                font-size: 13px;
+            }
+        """)
+        song_completer.activated.connect(lambda _text: self.apply_filter())
+        self.search.setCompleter(song_completer)
+
+        # 2. Artist Completer
+        artist_list = sorted(list(artist_suggestions), key=lambda a: search_text(a))
+        artist_completer = QCompleter(artist_list, self.artist_search)
+        artist_completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        artist_completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        artist_completer.setMaxVisibleItems(10)
+
+        artist_popup = artist_completer.popup()
+        artist_popup.setStyleSheet("""
+            QAbstractItemView {
+                background-color: #0f172a;
+                color: #f8fafc;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 4px;
+                selection-background-color: #1e293b;
+                selection-color: #38bdf8;
+                font-size: 13px;
+            }
+        """)
+        artist_completer.activated.connect(lambda _text: self.refresh_artist_filter())
+        self.artist_search.setCompleter(artist_completer)
+
 
     def populate_folders(self) -> None:
+
         artist_query = search_text(self.artist_search.text().strip())
         current_item = self.folder_list.currentItem()
         current_artist = current_item.data(Qt.ItemDataRole.UserRole) if current_item else ""
 
         self.folder_list.blockSignals(True)
         self.folder_list.clear()
-        local_tracks = [t for t in self.tracks if not t.path.as_posix().startswith("/online/")]
-        all_item = QListWidgetItem(self.tr("all_artists", count=len(local_tracks)))
-        all_item.setData(Qt.ItemDataRole.UserRole, "")
-        self.folder_list.addItem(all_item)
 
         folders: dict[str, int] = {}
         for track in self.tracks:
@@ -1140,8 +1446,7 @@ class PlayerWindow(QMainWindow):
                 continue
             folders[track.artist] = folders.get(track.artist, 0) + 1
 
-
-        next_row = 0
+        next_row = -1
         for folder, count in sorted(folders.items(), key=lambda item: search_text(item[0])):
             if artist_query and artist_query not in search_text(folder):
                 continue
@@ -1151,7 +1456,10 @@ class PlayerWindow(QMainWindow):
             if folder == current_artist:
                 next_row = self.folder_list.count() - 1
 
-        self.folder_list.setCurrentRow(next_row)
+        if next_row != -1:
+            self.folder_list.setCurrentRow(next_row)
+        else:
+            self.folder_list.setCurrentItem(None)
         self.folder_list.blockSignals(False)
 
     def refresh_artist_filter(self) -> None:
@@ -1179,11 +1487,27 @@ class PlayerWindow(QMainWindow):
 
         self.album_list.blockSignals(True)
         self.album_list.clear()
-        all_item = QListWidgetItem(self.tr("all_albums", count=sum(album_counts.values())))
-        all_item.setData(Qt.ItemDataRole.UserRole, "")
-        self.album_list.addItem(all_item)
 
-        next_row = 0
+        # Dedicated "⭐ Yêu thích" Album Entry
+        fav_count = sum(1 for t in self.tracks if str(t.path) in self.liked_tracks and not t.path.as_posix().startswith("/online/"))
+        if fav_count > 0:
+            fav_item = QListWidgetItem(f"{self.tr('favorites_album')} ({fav_count})")
+            fav_item.setData(Qt.ItemDataRole.UserRole, "__FAVORITES__")
+            fav_item.setForeground(QBrush(QColor("#f5c518")))
+            font = fav_item.font()
+            font.setBold(True)
+            fav_item.setFont(font)
+            self.album_list.addItem(fav_item)
+
+        # Custom Short Albums Entries
+        for pl_name, pl_tracks in self.custom_playlists.items():
+            c_count = len(pl_tracks)
+            c_item = QListWidgetItem(f"🎵 {pl_name} ({c_count})")
+            c_item.setData(Qt.ItemDataRole.UserRole, f"__CUSTOM_PLAYLIST__{pl_name}")
+            c_item.setForeground(QBrush(QColor("#38bdf8")))
+            self.album_list.addItem(c_item)
+
+        next_row = -1
         for album, count in sorted(album_counts.items(), key=lambda item: search_text(item[0])):
             item = QListWidgetItem(f"{self.display_album(album)} ({count})")
             item.setData(Qt.ItemDataRole.UserRole, album)
@@ -1191,33 +1515,73 @@ class PlayerWindow(QMainWindow):
             if album == current_album:
                 next_row = self.album_list.count() - 1
 
-        self.album_list.setCurrentRow(next_row)
+        if current_album == "__FAVORITES__":
+            next_row = 0
+        elif current_album and current_album.startswith("__CUSTOM_PLAYLIST__"):
+            for r in range(self.album_list.count()):
+                it = self.album_list.item(r)
+                if it and it.data(Qt.ItemDataRole.UserRole) == current_album:
+                    next_row = r
+                    break
+
+        if next_row != -1:
+            self.album_list.setCurrentRow(next_row)
+        else:
+            self.album_list.setCurrentItem(None)
         self.album_list.blockSignals(False)
 
     def apply_filter(self, switch_page: bool = True) -> None:
         if switch_page and hasattr(self, "content_stack") and self.content_stack.currentWidget() != self.local_library_page:
             self.content_stack.setCurrentWidget(self.local_library_page)
-        query = search_text(self.search.text().strip())
-        artist_query = search_text(self.artist_search.text().strip())
+
+        raw_query = self.search.text().strip()
+        raw_artist_query = self.artist_search.text().strip()
+        has_query = bool(raw_query or raw_artist_query)
+
         folder_item = self.folder_list.currentItem()
         selected_artist = folder_item.data(Qt.ItemDataRole.UserRole) if folder_item else ""
         album_item = self.album_list.currentItem()
         selected_album = album_item.data(Qt.ItemDataRole.UserRole) if album_item else ""
 
+        from fast_core import fast_match_query
+
         def matches(track: Track) -> bool:
+            path_str = str(track.path)
             if track.path.as_posix().startswith("/online/"):
                 return False
-            if selected_artist and track.artist != selected_artist:
-                return False
-            if selected_album and track.album != selected_album:
-                return False
-            if artist_query and artist_query not in search_text(track.artist):
-                return False
-            if query and query not in search_text(track.title):
-                return False
+
+            if not has_query:
+                if selected_album == "__FAVORITES__":
+                    if path_str not in self.liked_tracks:
+                        return False
+                elif selected_album and selected_album.startswith("__CUSTOM_PLAYLIST__"):
+                    pl_name = selected_album[len("__CUSTOM_PLAYLIST__"):]
+                    if path_str not in self.custom_playlists.get(pl_name, set()):
+                        return False
+                else:
+                    if selected_artist and track.artist != selected_artist:
+                        return False
+                    if selected_album and track.album != selected_album:
+                        return False
+
+            if raw_artist_query:
+                if not fast_match_query(track.artist, raw_artist_query):
+                    return False
+            if raw_query:
+                haystack = f"{track.title} {track.artist} {track.album} {track.folder} {track.path.name}"
+                if not fast_match_query(haystack, raw_query):
+                    return False
             return True
 
-        self.visible_tracks = [track for track in self.tracks if matches(track)]
+
+
+        filtered = [track for track in self.tracks if matches(track)]
+
+        # PRIORITIZE FAVORITES TO THE VERY TOP OF THE LIST
+        if selected_album != "__FAVORITES__" and not (selected_album and selected_album.startswith("__CUSTOM_PLAYLIST__")):
+            filtered.sort(key=lambda t: (str(t.path) not in self.liked_tracks, search_text(t.title)))
+
+        self.visible_tracks = filtered
         self.track_table.setUpdatesEnabled(False)
         self.track_table.setRowCount(len(self.visible_tracks))
         for row, track in enumerate(self.visible_tracks):
@@ -1270,8 +1634,32 @@ class PlayerWindow(QMainWindow):
         cell.setObjectName("trackTitleCell")
         cell.setToolTip(track.title)
         layout = QHBoxLayout(cell)
-        layout.setContentsMargins(12, 6, 12, 6)
-        layout.setSpacing(10)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+
+        # Star ⭐ button for 1-click favorite popup directly in row
+        is_liked = str(track.path) in self.liked_tracks
+        star_btn = QToolButton()
+        star_btn.setObjectName("rowStarButton")
+        star_btn.setText("★" if is_liked else "☆")
+        star_btn.setToolTip("Yêu thích / Thêm vào Album")
+        star_style = "QToolButton { border: none; background: transparent; color: #f5c518; font-size: 16px; font-weight: 900; padding: 2px; }" if is_liked else "QToolButton { border: none; background: transparent; color: rgba(255, 255, 255, 0.35); font-size: 16px; padding: 2px; }"
+        star_btn.setStyleSheet(star_style)
+        star_btn.clicked.connect(lambda _checked=False, t=track, btn=star_btn: self.open_star_popup_for_track(t, btn))
+        layout.addWidget(star_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
+        # Remove ✕ button if currently viewing a Custom Short Album
+        album_item = self.album_list.currentItem()
+        selected_album_data = album_item.data(Qt.ItemDataRole.UserRole) if album_item else ""
+        if selected_album_data and selected_album_data.startswith("__CUSTOM_PLAYLIST__"):
+            curr_pl = selected_album_data[len("__CUSTOM_PLAYLIST__"):]
+            remove_btn = QToolButton()
+            remove_btn.setText("✕")
+            remove_btn.setToolTip(f"Loại bỏ bài hát khỏi Album '{curr_pl}'")
+            remove_btn.setStyleSheet("QToolButton { border: none; background: transparent; color: rgba(239, 68, 68, 0.6); font-size: 13px; font-weight: bold; padding: 2px; } QToolButton:hover { color: #ef4444; background: rgba(239, 68, 68, 0.2); border-radius: 4px; }")
+            remove_btn.clicked.connect(lambda _chk=False, t=track, pl=curr_pl: self.remove_track_from_custom_playlist(t, pl))
+            layout.addWidget(remove_btn, 0, Qt.AlignmentFlag.AlignVCenter)
+
 
         cover = QLabel()
         cover.setObjectName("trackTitleCover")
@@ -1365,13 +1753,21 @@ class PlayerWindow(QMainWindow):
             return self.tracks[self.current_index]
         return None
 
+    def _lru_put(self, cache: OrderedDict, key, value, max_size: int) -> None:
+        """Insert into LRU OrderedDict, evicting oldest entry when full."""
+        if key in cache:
+            cache.move_to_end(key)
+        cache[key] = value
+        while len(cache) > max_size:
+            cache.popitem(last=False)
+
     def track_icon(self, track: Track, size: int, allow_extract: bool = False) -> QIcon:
         key = (self.art_key(track, allow_extract), size)
-        cached = self.art_cache.get(key)
-        if cached is not None:
-            return cached
+        if key in self.art_cache:
+            self.art_cache.move_to_end(key)
+            return self.art_cache[key]
         icon = QIcon(self.safe_track_pixmap(track, size, allow_extract))
-        self.art_cache[key] = icon
+        self._lru_put(self.art_cache, key, icon, self._ART_CACHE_MAX)
         return icon
 
     def safe_track_pixmap(self, track: Track, size: int, allow_extract: bool = False) -> QPixmap:
@@ -1383,9 +1779,9 @@ class PlayerWindow(QMainWindow):
 
     def track_pixmap(self, track: Track, size: int, allow_extract: bool = False) -> QPixmap:
         key = (self.art_key(track, allow_extract), size)
-        cached = self.pixmap_cache.get(key)
-        if cached is not None:
-            return cached
+        if key in self.pixmap_cache:
+            self.pixmap_cache.move_to_end(key)
+            return self.pixmap_cache[key]
 
         art_path = self.track_art_path(track, allow_extract)
         if art_path:
@@ -1396,11 +1792,18 @@ class PlayerWindow(QMainWindow):
                     x = max(0, (pixmap.width() - size) // 2)
                     y = max(0, (pixmap.height() - size) // 2)
                     pixmap = pixmap.copy(x, y, size, size)
-                self.pixmap_cache[key] = pixmap
+                self._lru_put(self.pixmap_cache, key, pixmap, self._PIXMAP_CACHE_MAX)
                 return pixmap
+            else:
+                from library import COVER_CACHE
+                if art_path.parent == COVER_CACHE and art_path.exists():
+                    try:
+                        art_path.unlink()
+                    except OSError:
+                        pass
 
         pixmap = self.default_art_pixmap(track, size)
-        self.pixmap_cache[key] = pixmap
+        self._lru_put(self.pixmap_cache, key, pixmap, self._PIXMAP_CACHE_MAX)
         return pixmap
 
     def track_art_path(self, track: Track, allow_extract: bool = False) -> Path | None:
@@ -1423,13 +1826,38 @@ class PlayerWindow(QMainWindow):
             if SERVER_URL:
                 if not hasattr(self, "_in_progress_covers"):
                     self._in_progress_covers = set()
-                if path_str not in self._in_progress_covers:
+                    self._in_progress_covers_ts: dict[str, float] = {}
+                # Retry after 60 seconds for failed covers
+                last_try = self._in_progress_covers_ts.get(path_str, 0)
+                if path_str not in self._in_progress_covers or (time.monotonic() - last_try > 60):
                     self._in_progress_covers.add(path_str)
-                    from urllib.parse import quote
+                    self._in_progress_covers_ts[path_str] = time.monotonic()
+                    from urllib.parse import quote as _quote
                     relative_part = path_str[len("/server/"):]
-                    cover_url = f"{SERVER_URL}/cover/{quote(relative_part)}"
-                    QTimer.singleShot(0, lambda: self.async_cache_online_art(cover_url, cached))
-                    
+                    cover_url = f"{SERVER_URL}/cover/{_quote(relative_part)}"
+                    _cached = cached
+                    _path_str = path_str
+                    _tr = track
+                    def _fetch_cover(_url=cover_url, _dest=_cached, _ps=_path_str, _track=_tr):
+                        try:
+                            import urllib.request as _req
+                            req = _req.Request(_url, headers={"User-Agent": "PlaylistOffline/2.0"})
+                            with _req.urlopen(req, timeout=15) as resp:
+                                if resp.status == 200:
+                                    data = resp.read()
+                                    from PySide6.QtGui import QImage
+                                    img = QImage()
+                                    if img.loadFromData(data) and not img.isNull():
+                                        with open(_dest, "wb") as f:
+                                            f.write(data)
+                                        self.server_cover_fetched.emit(_track)
+                        except Exception:
+                            pass
+                        finally:
+                            if hasattr(self, "_in_progress_covers"):
+                                self._in_progress_covers.discard(_ps)
+                    threading.Thread(target=_fetch_cover, daemon=True).start()
+
         if allow_extract and not is_server:
             return extract_embedded_art(track.path)
         return None
@@ -1493,14 +1921,9 @@ class PlayerWindow(QMainWindow):
                 pass
 
     def register_extracted_cover(self, track: Track) -> None:
-        # Clear the old default/fallback pixmap caches for this track
-        keys_to_remove = [k for k in self.pixmap_cache.keys() if k[0].startswith("default:") and track.title in k[0]]
-        for k in keys_to_remove:
-            self.pixmap_cache.pop(k, None)
-            
-        keys_to_remove_art = [k for k in self.art_cache.keys() if k[0].startswith("default:") and track.title in k[0]]
-        for k in keys_to_remove_art:
-            self.art_cache.pop(k, None)
+        # Clear cached pixmaps and icons so fresh images load from disk
+        self.pixmap_cache.clear()
+        self.art_cache.clear()
             
         # Update the cover image in the player bar (bottom bar)
         self.set_bottom_cover(track)
@@ -1535,9 +1958,10 @@ class PlayerWindow(QMainWindow):
             self.bottom_cover.setText("♪")
             self.bottom_cover.setPixmap(QPixmap())
             return
-        pixmap = self.bottom_track_pixmap(track, 46)
+        pixmap = self.bottom_track_pixmap(track, 50)
         self.bottom_cover.setText("")
         self.bottom_cover.setPixmap(pixmap)
+
 
     def bottom_track_pixmap(self, track: Track, size: int) -> QPixmap:
         art_path = self.track_art_path(track, allow_extract=True)
@@ -1556,6 +1980,7 @@ class PlayerWindow(QMainWindow):
                     pixmap = pixmap.copy(x, y, size, size)
                 return pixmap
         return self.neutral_bottom_pixmap(track, size)
+
 
     def neutral_bottom_pixmap(self, track: Track, size: int) -> QPixmap:
         pixmap = QPixmap(size, size)
@@ -1725,52 +2150,56 @@ class PlayerWindow(QMainWindow):
         
         if getattr(self, "splitter_animation", None) is not None:
             self.splitter_animation.stop()
-            
+            self.splitter_animation.deleteLater()
+            self.splitter_animation = None
+
         start_sizes = self.main_splitter.sizes()
         current_np_width = start_sizes[2] if len(start_sizes) > 2 else 0
-        
+
         self.splitter_animation = QVariantAnimation(self)
         self.splitter_animation.setStartValue(current_np_width)
         target_width = getattr(self, "preferred_now_playing_width", 320)
         self.splitter_animation.setEndValue(target_width)
         self.splitter_animation.setDuration(350)
         self.splitter_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        
+
         def update_sizes(val):
             w = self.width()
             sidebar_w = start_sizes[0] if start_sizes else 190
             middle_w = max(0, w - sidebar_w - val)
             self.main_splitter.setSizes([sidebar_w, middle_w, val])
-            
+
         self.splitter_animation.valueChanged.connect(update_sizes)
         self.splitter_animation.start()
 
     def hide_now_playing(self) -> None:
         if getattr(self, "splitter_animation", None) is not None:
             self.splitter_animation.stop()
-            
+            self.splitter_animation.deleteLater()
+            self.splitter_animation = None
+
         start_sizes = self.main_splitter.sizes()
         current_np_width = start_sizes[2] if len(start_sizes) > 2 else 0
-        
+
         self.splitter_animation = QVariantAnimation(self)
         self.splitter_animation.setStartValue(current_np_width)
         self.splitter_animation.setEndValue(0)
         self.splitter_animation.setDuration(350)
         self.splitter_animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        
+
         def update_sizes(val):
             w = self.width()
             sidebar_w = start_sizes[0] if start_sizes else 190
             middle_w = max(0, w - sidebar_w - val)
             self.main_splitter.setSizes([sidebar_w, middle_w, val])
-            
+
         def on_finished():
             self.now_playing_window.hide()
             if hasattr(self, "playbar_center_container"):
                 self.playbar_center_container.setVisible(True)
             if hasattr(self, "playbar_info_container"):
                 self.playbar_info_container.setVisible(True)
-                
+
         self.splitter_animation.valueChanged.connect(update_sizes)
         self.splitter_animation.finished.connect(on_finished)
         self.splitter_animation.start()
@@ -1823,31 +2252,48 @@ class PlayerWindow(QMainWindow):
             if hue < 0:
                 hue = 208
             
-            # Generate the dynamic palette based on the accent color
-            # 1. content_panel top gradient color (vibrant accent color)
-            sat_gradient = min(220, max(100, int(saturation * 1.05)))
-            val_gradient = min(85, max(38, int(value * 0.45)))
-            gradient_start = QColor.fromHsv(hue, sat_gradient, val_gradient)
-            
-            # 2. content_panel base color (vibrant dark/deep accent version)
-            sat_dark = min(200, max(70, int(saturation * 0.85)))
-            val_dark = min(32, max(16, int(value * 0.24)))
-            bg_dark = QColor.fromHsv(hue, sat_dark, val_dark)
-            
-            # 3. main window background (slightly darker than content panel)
-            sat_window = min(200, max(70, int(saturation * 0.85)))
-            val_window = min(24, max(12, int(value * 0.18)))
-            bg_window = QColor.fromHsv(hue, sat_window, val_window)
-            
-            # 4. sidebar and playerBar background (slightly lighter than window, darker than content panel)
-            sat_sidebar = min(200, max(70, int(saturation * 0.85)))
-            val_sidebar = min(28, max(14, int(value * 0.20)))
-            bg_sidebar = QColor.fromHsv(hue, sat_sidebar, val_sidebar)
-            
-            # 5. borders (subtle tint of the color)
-            sat_border = min(200, max(70, int(saturation * 0.85)))
-            val_border = min(50, max(26, int(value * 0.35)))
-            bg_border = QColor.fromHsv(hue, sat_border, val_border)
+            if saturation < 45:
+                # Sleek dark monochrome / graphite / obsidian palette for dark & gray covers
+                sat_gradient = max(0, min(50, saturation))
+                val_gradient = max(45, min(95, value))
+                gradient_start = QColor.fromHsv(hue, sat_gradient, val_gradient)
+
+                sat_dark = max(0, min(40, saturation))
+                val_dark = max(18, min(28, int(value * 0.3)))
+                bg_dark = QColor.fromHsv(hue, sat_dark, val_dark)
+
+                sat_window = max(0, min(35, saturation))
+                val_window = max(12, min(22, int(value * 0.2)))
+                bg_window = QColor.fromHsv(hue, sat_window, val_window)
+
+                sat_sidebar = max(0, min(40, saturation))
+                val_sidebar = max(16, min(26, int(value * 0.25)))
+                bg_sidebar = QColor.fromHsv(hue, sat_sidebar, val_sidebar)
+
+                sat_border = max(0, min(60, saturation))
+                val_border = max(45, min(80, int(value * 0.5)))
+                bg_border = QColor.fromHsv(hue, sat_border, val_border)
+            else:
+                # Rich vibrant ambient palette for colorful covers
+                sat_gradient = min(255, max(130, int(saturation * 1.1)))
+                val_gradient = min(160, max(85, int(value * 0.70)))
+                gradient_start = QColor.fromHsv(hue, sat_gradient, val_gradient)
+
+                sat_dark = min(220, max(90, int(saturation * 0.85)))
+                val_dark = min(42, max(22, int(value * 0.28)))
+                bg_dark = QColor.fromHsv(hue, sat_dark, val_dark)
+
+                sat_window = min(220, max(90, int(saturation * 0.85)))
+                val_window = min(30, max(15, int(value * 0.20)))
+                bg_window = QColor.fromHsv(hue, sat_window, val_window)
+
+                sat_sidebar = min(220, max(90, int(saturation * 0.85)))
+                val_sidebar = min(36, max(18, int(value * 0.24)))
+                bg_sidebar = QColor.fromHsv(hue, sat_sidebar, val_sidebar)
+
+                sat_border = min(255, max(110, int(saturation * 0.90)))
+                val_border = min(90, max(45, int(value * 0.45)))
+                bg_border = QColor.fromHsv(hue, sat_border, val_border)
 
             target_colors = {
                 "bg_window": bg_window,
@@ -1864,6 +2310,8 @@ class PlayerWindow(QMainWindow):
 
         if getattr(self, "bg_animation", None) is not None:
             self.bg_animation.stop()
+            self.bg_animation.deleteLater()
+            self.bg_animation = None
 
         start_colors = self.current_colors.copy()
 
@@ -1906,13 +2354,23 @@ class PlayerWindow(QMainWindow):
 
         self.root_widget.setStyleSheet(f"QWidget#appRoot {{ background: {current_bg_window.name()}; }}")
         self.sidebar_widget.setStyleSheet(f"QWidget#sidebar {{ background: {current_bg_sidebar.name()}; }}")
-        self.player_bar.setStyleSheet(f"QFrame#playerBar {{ background: {current_bg_sidebar.name()}; border: 1px solid {current_bg_border.name()}; }}")
+        self.player_bar.setStyleSheet(
+            f"QFrame#playerBar {{"
+            f"    background: {current_bg_sidebar.name()};"
+            f"    border-top: 1px solid {current_bg_border.name()};"
+            f"    border-bottom: none;"
+            f"    border-left: none;"
+            f"    border-right: none;"
+            f"    border-radius: 0px;"
+            f"}}"
+        )
         self.content_panel.setStyleSheet(
             f"QWidget#contentPanel {{"
             f"    background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 {current_gradient_start.name()}, stop:0.45 {current_bg_dark.name()}, stop:1 {current_bg_dark.name()});"
-            f"    border-radius: 14px;"
+            f"    border-radius: 12px;"
             f"}}"
         )
+
         self.cover_frame.setStyleSheet(
             f"QFrame#coverArt {{"
             f"    background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 {current_accent.name()}, stop:1 #000000);"
@@ -1967,6 +2425,41 @@ class PlayerWindow(QMainWindow):
         """
         self.hero_rescan_button.setStyleSheet(secondary_hover_style)
         self.hero_folder_button.setStyleSheet(secondary_hover_style)
+        if hasattr(self, "hero_sync_button"):
+            self.hero_sync_button.setStyleSheet(secondary_hover_style)
+
+        if hasattr(self, "position_slider") and hasattr(self.position_slider, "set_accent"):
+            self.position_slider.set_accent(current_accent)
+
+        if hasattr(self, "volume"):
+            self.volume.setStyleSheet(f"""
+                QSlider#volumeSlider::groove:horizontal {{
+                    background: rgba(255, 255, 255, 0.15);
+                    height: 4px;
+                    border-radius: 2px;
+                }}
+                QSlider#volumeSlider::sub-page:horizontal {{
+                    background: {accent_hex};
+                    height: 4px;
+                    border-radius: 2px;
+                }}
+                QSlider#volumeSlider::add-page:horizontal {{
+                    background: rgba(255, 255, 255, 0.15);
+                    height: 4px;
+                    border-radius: 2px;
+                }}
+                QSlider#volumeSlider::handle:horizontal {{
+                    background: #ffffff;
+                    border: 2px solid {accent_hex};
+                    width: 10px;
+                    height: 10px;
+                    margin: -3px 0;
+                    border-radius: 5px;
+                }}
+            """)
+
+        if hasattr(self, "visualizer") and hasattr(self.visualizer, "set_accent"):
+            self.visualizer.set_accent(current_accent)
 
         if hasattr(self, "new_tracks_card"):
             self.new_tracks_card.set_accent(current_accent)
@@ -1977,6 +2470,7 @@ class PlayerWindow(QMainWindow):
                 self.mini_player.update_theme(current_accent, current_gradient_start, current_bg_dark, current_bg_border)
             except Exception:
                 pass
+
 
 
     def highlight_track(self, track: Track) -> None:
@@ -2294,6 +2788,9 @@ class PlayerWindow(QMainWindow):
         if not self.is_user_seeking:
             self.position_slider.setValue(position)
         self.elapsed_label.setText(format_ms(position))
+
+        if hasattr(self, "now_playing_window") and self.now_playing_window is not None:
+            self.now_playing_window.update_video_loop_frame(position)
 
     def update_duration(self, duration: int) -> None:
         self.position_slider.setRange(0, max(0, duration))
@@ -2957,9 +3454,6 @@ class PlayerWindow(QMainWindow):
                 
         if not already_exists:
             # Check filesystem too
-            import re
-            def safe_filename(name: str) -> str:
-                return re.sub(r'[\\/*?:"<>|]', "", name).strip()
             safe_title = safe_filename(title)
             safe_artist = safe_filename(artist)
             artist_dir = self.library_root / safe_artist
@@ -3219,61 +3713,24 @@ class PlayerWindow(QMainWindow):
 
     def upload_server_track(self, track: Track) -> None:
         from constants import SERVER_URL
-        if not SERVER_URL:
-            return
-            
-        path_str = track.path.as_posix()
-        if path_str.startswith("/server/") or path_str.startswith("/online/"):
-            return
-            
-        if not track.path.exists():
+        if not SERVER_URL or track.path.as_posix().startswith(("/server/", "/online/")) or not track.path.exists():
             return
             
         self.status.setText(self.tr("upload_start", title=track.title))
         
-        def run():
-            import uuid
-            import urllib.request
-            try:
-                url = f"{SERVER_URL}/upload"
-                boundary = uuid.uuid4().hex
-                parts = []
-                
-                fields = {
-                    "artist": track.artist,
-                    "album": track.album
-                }
-                for name, value in fields.items():
-                    parts.append(f"--{boundary}".encode('utf-8'))
-                    parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
-                    parts.append(b'')
-                    parts.append(str(value).encode('utf-8'))
-                    
-                parts.append(f"--{boundary}".encode('utf-8'))
-                filename = track.path.name
-                parts.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode('utf-8'))
-                parts.append(b'Content-Type: application/octet-stream')
-                parts.append(b'')
-                with open(track.path, 'rb') as f:
-                    parts.append(f.read())
-                    
-                parts.append(f"--{boundary}--".encode('utf-8'))
-                parts.append(b'')
-                
-                body = b'\r\n'.join(parts)
-                req = urllib.request.Request(url, data=body)
-                req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-                req.add_header('Content-Length', str(len(body)))
-                
-                with urllib.request.urlopen(req, timeout=30) as response:
-                    response.read()
-                    
-                QTimer.singleShot(0, lambda: self.on_server_upload_success(track))
-            except Exception as e:
-                QTimer.singleShot(0, lambda err=str(e): self.on_server_upload_failed(track, err))
-                
-        import threading
-        threading.Thread(target=run, daemon=True).start()
+        from upload_worker import UploadWorker
+        worker = UploadWorker([(track.path, track.artist, track.album)], SERVER_URL, self)
+        
+        def on_finished(success_count, total, failed):
+            if success_count > 0:
+                self.on_server_upload_success(track)
+            else:
+                err = failed[0][1] if failed else "Upload failed"
+                self.on_server_upload_failed(track, err)
+            worker.deleteLater()
+            
+        worker.finished_signal.connect(on_finished)
+        worker.start()
 
     def on_server_upload_success(self, track: Track) -> None:
         self.status.setText(self.tr("upload_success", title=track.title))
@@ -3294,12 +3751,94 @@ class PlayerWindow(QMainWindow):
             self.tr("upload_failed", title=track.title, error=error_msg)
         )
 
+    def check_for_updates(self) -> None:
+        """Triggered by user to check for new/renamed tracks and sync without copying duplicates."""
+        from constants import SERVER_URL
+        self.status.setText("Đang kiểm tra cập nhật thư viện..." if self.language == "vi" else "Checking for library updates...")
+        
+        def run():
+            from library import scan_library, get_file_signature
+            import json
+            import urllib.request
+            
+            # 1. Scan local tracks and build payload signatures
+            local_tracks = scan_library(self.library_root) if self.library_root.exists() else []
+            local_files = []
+            for lt in local_tracks:
+                try:
+                    rel_p = lt.path.relative_to(self.library_root).as_posix()
+                    sig = get_file_signature(lt.path)
+                    local_files.append({
+                        "filename": lt.path.name,
+                        "rel_path": rel_p,
+                        "size": sig.get("size", 0),
+                        "artist": lt.artist,
+                        "album": lt.album,
+                        "title": lt.title,
+                        "local_path": str(lt.path)
+                    })
+                except Exception:
+                    pass
+
+            renamed_count = 0
+            new_count = 0
+            
+            # 2. Query Server for update checks if SERVER_URL is available
+            if SERVER_URL and local_files:
+                try:
+                    check_url = f"{SERVER_URL}/check_update"
+                    payload = json.dumps({"files": local_files}).encode('utf-8')
+                    req = urllib.request.Request(check_url, data=payload, headers={"Content-Type": "application/json"})
+                    with urllib.request.urlopen(req, timeout=15) as resp:
+                        res_data = json.loads(resp.read().decode('utf-8'))
+                        
+                    # Handle renamed tracks on server in-place (0.01s!)
+                    renamed_items = res_data.get('renamed', [])
+                    for item in renamed_items:
+                        f_info = item.get('file', {})
+                        old_s_path = item.get('old_server_path', '')
+                        if old_s_path and f_info:
+                            try:
+                                rename_url = f"{SERVER_URL}/rename"
+                                r_payload = json.dumps({
+                                    "old_path": old_s_path,
+                                    "artist": f_info.get("artist", "Library"),
+                                    "album": f_info.get("album", "Singles"),
+                                    "filename": f_info.get("filename", "")
+                                }).encode('utf-8')
+                                r_req = urllib.request.Request(rename_url, data=r_payload, headers={"Content-Type": "application/json"})
+                                with urllib.request.urlopen(r_req, timeout=10) as r_resp:
+                                    r_resp.read()
+                                renamed_count += 1
+                            except Exception:
+                                pass
+                                
+                    new_count = len(res_data.get('to_upload', []))
+                except Exception as e:
+                    print(f"Server check update error: {e}")
+                    
+            def finish():
+                self.reload_library()
+                msg = (
+                    f"Đã kiểm tra cập nhật xong! ({new_count} bài mới, {renamed_count} bài đổi tên được đồng bộ)"
+                    if self.language == "vi"
+                    else f"Update check complete! ({new_count} new, {renamed_count} renamed tracks synced)"
+                )
+                self.status.setText(msg)
+                from PySide6.QtWidgets import QMessageBox
+                QMessageBox.information(
+                    self,
+                    "Kiểm tra cập nhật" if self.language == "vi" else "Check for Updates",
+                    msg
+                )
+
+            QTimer.singleShot(0, finish)
+
+        threading.Thread(target=run, daemon=True).start()
+
     def sync_library_to_server(self) -> None:
         from constants import SERVER_URL
-        if not SERVER_URL:
-            return
-            
-        if not self.library_root.exists():
+        if not SERVER_URL or not self.library_root.exists():
             return
             
         self.hero_sync_button.setEnabled(False)
@@ -3307,37 +3846,67 @@ class PlayerWindow(QMainWindow):
         
         def run():
             import uuid
+            import json
             import urllib.request
-            from library import scan_library
+            from library import scan_library, get_file_signature
             try:
-                # 1. Gather all relative paths of tracks currently on the server
-                server_rel_paths = set()
-                for track in self.tracks:
-                    path_str = track.path.as_posix()
-                    if path_str.startswith("/server/"):
-                        server_rel_paths.add(path_str[len("/server/"):].lower())
-                        
-                # 2. Scan local tracks
+                # 1. Gather local tracks and signatures
                 local_tracks = scan_library(self.library_root)
-                
-                # 3. Identify new tracks that aren't on the server
-                tracks_to_upload = []
-                for local_track in local_tracks:
+                local_files_payload = []
+                for lt in local_tracks:
                     try:
-                        rel_path = local_track.path.relative_to(self.library_root).as_posix()
-                        if rel_path.lower() not in server_rel_paths:
-                            tracks_to_upload.append(local_track)
+                        rel_p = lt.path.relative_to(self.library_root).as_posix()
+                        sig = get_file_signature(lt.path)
+                        local_files_payload.append({
+                            "filename": lt.path.name,
+                            "rel_path": rel_p,
+                            "size": sig.get("size", 0),
+                            "artist": lt.artist,
+                            "album": lt.album,
+                            "title": lt.title,
+                            "local_path": str(lt.path)
+                        })
                     except ValueError:
                         pass
                         
-                if not tracks_to_upload:
+                # 2. Check update with server to handle renamed files & identify missing tracks
+                check_url = f"{SERVER_URL}/check_update"
+                payload = json.dumps({"files": local_files_payload}).encode('utf-8')
+                req = urllib.request.Request(check_url, data=payload, headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(req, timeout=20) as resp:
+                    res_data = json.loads(resp.read().decode('utf-8'))
+                    
+                # Handle renamed files on server in-place without re-uploading!
+                for item in res_data.get('renamed', []):
+                    f_info = item.get('file', {})
+                    old_s_path = item.get('old_server_path', '')
+                    if old_s_path and f_info:
+                        try:
+                            rename_url = f"{SERVER_URL}/rename"
+                            r_payload = json.dumps({
+                                "old_path": old_s_path,
+                                "artist": f_info.get("artist", "Library"),
+                                "album": f_info.get("album", "Singles"),
+                                "filename": f_info.get("filename", "")
+                            }).encode('utf-8')
+                            r_req = urllib.request.Request(rename_url, data=r_payload, headers={"Content-Type": "application/json"})
+                            with urllib.request.urlopen(r_req, timeout=10) as r_resp:
+                                r_resp.read()
+                        except Exception:
+                            pass
+
+                # 3. Only upload files identified in to_upload list!
+                to_upload_list = res_data.get('to_upload', [])
+                if not to_upload_list:
                     QTimer.singleShot(0, lambda: self.on_sync_success(0))
                     return
-                    
-                # 4. Upload each new track sequentially
+
                 uploaded_count = 0
-                for i, local_track in enumerate(tracks_to_upload):
-                    msg = f"Đồng bộ: Tải lên {i+1}/{len(tracks_to_upload)} - {local_track.title}..." if self.language == "vi" else f"Sync: Uploading {i+1}/{len(tracks_to_upload)} - {local_track.title}..."
+                for i, item in enumerate(to_upload_list):
+                    l_path = Path(item.get("local_path", ""))
+                    if not l_path.exists():
+                        continue
+                    msg = f"Đồng bộ: Tải lên {i+1}/{len(to_upload_list)} - {item.get('filename')}..." if self.language == "vi" else f"Sync: Uploading {i+1}/{len(to_upload_list)} - {item.get('filename')}..."
                     QTimer.singleShot(0, lambda m=msg: self.status.setText(m))
                     
                     url = f"{SERVER_URL}/upload"
@@ -3345,8 +3914,8 @@ class PlayerWindow(QMainWindow):
                     parts = []
                     
                     fields = {
-                        "artist": local_track.artist,
-                        "album": local_track.album
+                        "artist": item.get("artist", "Library"),
+                        "album": item.get("album", "Singles")
                     }
                     for name, value in fields.items():
                         parts.append(f"--{boundary}".encode('utf-8'))
@@ -3355,22 +3924,22 @@ class PlayerWindow(QMainWindow):
                         parts.append(str(value).encode('utf-8'))
                         
                     parts.append(f"--{boundary}".encode('utf-8'))
-                    filename = local_track.path.name
+                    filename = item.get("filename")
                     parts.append(f'Content-Disposition: form-data; name="file"; filename="{filename}"'.encode('utf-8'))
                     parts.append(b'Content-Type: application/octet-stream')
                     parts.append(b'')
-                    with open(local_track.path, 'rb') as f:
+                    with open(l_path, 'rb') as f:
                         parts.append(f.read())
                         
                     parts.append(f"--{boundary}--".encode('utf-8'))
                     parts.append(b'')
                     
                     body = b'\r\n'.join(parts)
-                    req = urllib.request.Request(url, data=body)
-                    req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-                    req.add_header('Content-Length', str(len(body)))
+                    req_up = urllib.request.Request(url, data=body)
+                    req_up.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
+                    req_up.add_header('Content-Length', str(len(body)))
                     
-                    with urllib.request.urlopen(req, timeout=30) as response:
+                    with urllib.request.urlopen(req_up, timeout=60) as response:
                         response.read()
                         
                     uploaded_count += 1
@@ -3379,7 +3948,6 @@ class PlayerWindow(QMainWindow):
             except Exception as e:
                 QTimer.singleShot(0, lambda err=str(e): self.on_sync_failed(err))
                 
-        import threading
         threading.Thread(target=run, daemon=True).start()
 
     def on_sync_success(self, count: int) -> None:
@@ -3663,9 +4231,24 @@ class PlayerWindow(QMainWindow):
         # Upload chosen files sequentially using threading.Thread and QProgressDialog
         total_files = len(chosen_files)
         
+        from library import parse_track_info
+        files_for_worker = []
+        for file_path_str in chosen_files:
+            file_path = Path(file_path_str)
+            if artist_name == "AUTO":
+                root_dir = scan_root_path if scan_root_path else file_path.parent
+                try:
+                    file_artist, file_album, _ = parse_track_info(file_path, root_dir)
+                except Exception:
+                    file_artist, file_album = "Library", "Singles"
+            else:
+                file_artist, file_album = artist_name, album_name
+            files_for_worker.append((file_path, file_artist, file_album))
+
         from PySide6.QtWidgets import QProgressDialog
-        from PySide6.QtCore import Qt, QTimer
-        
+        from PySide6.QtCore import Qt
+        from upload_worker import UploadWorker
+
         progress_dialog = QProgressDialog(
             "Đang chuẩn bị tải lên..." if self.language == "vi" else "Preparing upload...",
             "Hủy" if self.language == "vi" else "Cancel",
@@ -3677,130 +4260,48 @@ class PlayerWindow(QMainWindow):
         progress_dialog.setWindowModality(Qt.WindowModality.WindowModal)
         progress_dialog.setMinimumDuration(0)
         progress_dialog.setValue(0)
-        
-        state = {
-            "is_cancelled": False,
-            "success_count": 0
-        }
-        
-        def on_cancel():
-            state["is_cancelled"] = True
-            self.status.setText("Đã hủy tải lên" if self.language == "vi" else "Upload cancelled")
-            
-        progress_dialog.canceled.connect(on_cancel)
-        
-        def run_upload():
-            log_path = Path(r"c:\Users\Phant\Music\Music_player_app\upload_debug.log")
-            def log_debug(msg):
-                try:
-                    with open(log_path, "a", encoding="utf-8") as lf:
-                        lf.write(f"{msg}\n")
-                except Exception:
-                    pass
-                print(msg, flush=True)
-                
-            try:
-                log_debug(f"Starting run_upload for {total_files} files...")
-                import uuid
-                import urllib.request
-                from library import parse_track_info
-                
-                for i, file_path_str in enumerate(chosen_files):
-                    if state["is_cancelled"]:
-                        log_debug("Upload cancelled by user.")
-                        break
-                        
-                    file_path = Path(file_path_str)
-                    log_debug(f"Processing file {i+1}/{total_files}: {file_path}")
-                    
-                    # Dynamic classification if set to AUTO
-                    if artist_name == "AUTO":
-                        root_dir = scan_root_path if scan_root_path else file_path.parent
-                        try:
-                            file_artist, file_album, _ = parse_track_info(file_path, root_dir)
-                            log_debug(f"AUTO parse: artist={file_artist}, album={file_album}")
-                        except Exception as e_parse:
-                            log_debug(f"Error parsing heuristics: {e_parse}")
-                            file_artist, file_album = "Library", "Singles"
-                    else:
-                        file_artist = artist_name
-                        file_album = album_name
-                        
-                    msg = f"Tải lên {i+1}/{total_files}: {file_path.name}..." if self.language == "vi" else f"Uploading {i+1}/{total_files}: {file_path.name}..."
-                    
-                    # Safe thread UI update
-                    QTimer.singleShot(0, lambda val=i, m=msg: (
-                        progress_dialog.setValue(val),
-                        progress_dialog.setLabelText(m),
-                        self.status.setText(m)
-                    ))
-                    
-                    try:
-                        upload_url = f"{url}/upload"
-                        log_debug(f"Uploading to {upload_url}...")
-                        boundary = uuid.uuid4().hex
-                        parts = []
-                        
-                        fields = {
-                            "artist": file_artist,
-                            "album": file_album
-                        }
-                        for name, val in fields.items():
-                            parts.append(f"--{boundary}".encode('utf-8'))
-                            parts.append(f'Content-Disposition: form-data; name="{name}"'.encode('utf-8'))
-                            parts.append(b'')
-                            parts.append(str(val).encode('utf-8'))
-                            
-                        parts.append(f"--{boundary}".encode('utf-8'))
-                        parts.append(f'Content-Disposition: form-data; name="file"; filename="{file_path.name}"'.encode('utf-8'))
-                        parts.append(b'Content-Type: application/octet-stream')
-                        parts.append(b'')
-                        with open(file_path, 'rb') as f:
-                            parts.append(f.read())
-                            
-                        parts.append(f"--{boundary}--".encode('utf-8'))
-                        parts.append(b'')
-                        
-                        body = b'\r\n'.join(parts)
-                        req = urllib.request.Request(upload_url, data=body)
-                        req.add_header('Content-Type', f'multipart/form-data; boundary={boundary}')
-                        req.add_header('Content-Length', str(len(body)))
-                        
-                        log_debug("Sending request...")
-                        with urllib.request.urlopen(req, timeout=30) as response:
-                            response.read()
-                        state["success_count"] += 1
-                        log_debug("Uploaded successfully!")
-                    except Exception as e:
-                        log_debug(f"Error uploading {file_path.name}: {e}")
-                        import traceback
-                        log_debug(traceback.format_exc())
-                        
-            except Exception as outer_e:
-                log_debug(f"CRITICAL OUTER ERROR: {outer_e}")
-                import traceback
-                log_debug(traceback.format_exc())
-                
-            def on_finished():
-                progress_dialog.close()
-                success_count = state["success_count"]
-                msg_done = f"Đã tải lên thành công {success_count}/{total_files} file!" if self.language == "vi" else f"Successfully uploaded {success_count}/{total_files} files!"
-                self.set_status_notification(msg_done, "success" if success_count == total_files else "error")
-                
-                QMessageBox.information(
-                    self,
-                    "Tải lên hoàn tất" if self.language == "vi" else "Upload Completed",
-                    msg_done
-                )
-                
-                import constants
-                if constants.SERVER_URL:
-                    self.reload_library()
-                    
-            QTimer.singleShot(0, on_finished)
-            
-        import threading
-        threading.Thread(target=run_upload, daemon=True).start()
+
+        self.current_upload_worker = UploadWorker(files_for_worker, url, self)
+        progress_dialog.canceled.connect(self.current_upload_worker.cancel)
+
+        def on_progress(idx, total, name, bytes_sent, total_bytes, speed_mbps):
+            mb_sent = bytes_sent / (1024 * 1024)
+            mb_total = max(0.1, total_bytes / (1024 * 1024))
+            msg = (
+                f"Tải lên {idx}/{total}: {name} ({mb_sent:.1f} MB / {mb_total:.1f} MB @ {speed_mbps:.1f} MB/s)"
+                if self.language == "vi"
+                else f"Uploading {idx}/{total}: {name} ({mb_sent:.1f} MB / {mb_total:.1f} MB @ {speed_mbps:.1f} MB/s)"
+            )
+            progress_dialog.setValue(idx - 1)
+            progress_dialog.setLabelText(msg)
+            self.status.setText(msg)
+
+        def on_finished(success_count, total, failed):
+            progress_dialog.close()
+            msg_done = (
+                f"Đã tải lên thành công {success_count}/{total} file!"
+                if self.language == "vi"
+                else f"Successfully uploaded {success_count}/{total} files!"
+            )
+            self.set_status_notification(msg_done, "success" if success_count == total else "error")
+
+            QMessageBox.information(
+                self,
+                "Tải lên hoàn tất" if self.language == "vi" else "Upload Completed",
+                msg_done
+            )
+
+            import constants
+            if constants.SERVER_URL:
+                self.reload_library()
+            if getattr(self, "current_upload_worker", None) is not None:
+                self.current_upload_worker.deleteLater()
+                self.current_upload_worker = None
+
+        self.current_upload_worker.progress_signal.connect(on_progress)
+        self.current_upload_worker.finished_signal.connect(on_finished)
+        self.current_upload_worker.start()
+
 
     def set_status_notification(self, text: str, color_type: str) -> None:
         self.status.setText(text)

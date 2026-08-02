@@ -257,8 +257,37 @@ def background_library_scanner():
             print(f"Error in background scanner: {e}", flush=True)
         time.sleep(10)
 
+FAVORITES_FILE = MUSIC_DIR / "favorites.json"
+
+@app.route('/favorites', methods=['GET'])
+def get_favorites():
+    if not FAVORITES_FILE.exists():
+        return jsonify([])
+    try:
+        import json
+        with open(FAVORITES_FILE, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return jsonify(data)
+    except Exception:
+        return jsonify([])
+
+@app.route('/favorites', methods=['POST'])
+def update_favorites():
+    try:
+        import json
+        req_data = request.get_json(silent=True) or {}
+        fav_list = req_data.get('favorites', [])
+        if isinstance(fav_list, list):
+            with open(FAVORITES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(fav_list, f, ensure_ascii=False, indent=2)
+            return jsonify({'success': True, 'count': len(fav_list)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    return jsonify({'error': 'Invalid payload'}), 400
+
 @app.route('/tracks', methods=['GET'])
 def get_tracks():
+
     global cached_tracks
     if not cached_tracks:
         try:
@@ -297,12 +326,15 @@ def get_cover(filename):
             return send_file(cache_path)
             
         try:
+            # Try seeking 1s into video to avoid pitch-black initial frame
             result = subprocess.run(
                 [
                     ffmpeg,
                     "-y",
                     "-loglevel",
                     "error",
+                    "-ss",
+                    "00:00:01",
                     "-i",
                     str(file_path),
                     "-an",
@@ -315,7 +347,27 @@ def get_cover(filename):
                 check=False,
                 creationflags=SUBPROCESS_FLAGS,
             )
-            if result.returncode == 0 and cache_path.exists() and cache_path.stat().st_size > 0:
+            if result.returncode != 0 or not cache_path.exists() or cache_path.stat().st_size == 0:
+                # Fallback without timestamp seeking
+                subprocess.run(
+                    [
+                        ffmpeg,
+                        "-y",
+                        "-loglevel",
+                        "error",
+                        "-i",
+                        str(file_path),
+                        "-an",
+                        "-vframes",
+                        "1",
+                        str(cache_path),
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    creationflags=SUBPROCESS_FLAGS,
+                )
+            if cache_path.exists() and cache_path.stat().st_size > 0:
                 return send_file(cache_path)
         except Exception:
             pass
@@ -359,13 +411,126 @@ def upload_file():
     dest_path = dest_dir / clean_name
     file.save(dest_path)
     
-    global cached_tracks
-    try:
-        cached_tracks = scan_library(MUSIC_DIR)
-    except Exception:
-        pass
+    request_background_rescan()
     
     return jsonify({'success': True, 'path': str(dest_path)})
+
+@app.route('/check_update', methods=['POST'])
+def check_update():
+    """Smart check endpoint: compares client file signatures against server files."""
+    try:
+        req_data = request.get_json(silent=True) or {}
+        files = req_data.get('files', [])
+        
+        # Build server file index by size & relative path
+        server_files = {}
+        for p in MUSIC_DIR.rglob("*"):
+            if p.is_file() and p.suffix.lower() in AUDIO_EXTENSIONS:
+                try:
+                    rel_p = p.relative_to(MUSIC_DIR).as_posix()
+                    server_files[rel_p.lower()] = {
+                        "path": rel_p,
+                        "size": p.stat().st_size,
+                        "name": p.name
+                    }
+                except OSError:
+                    pass
+                    
+        to_upload = []
+        renamed = []
+        already_present = []
+        
+        for f in files:
+            rel_path = f.get('rel_path', '').lower()
+            size = f.get('size', 0)
+            
+            if rel_path in server_files and server_files[rel_path]['size'] == size:
+                already_present.append(f)
+            else:
+                matched_existing = None
+                for sp_lower, s_info in server_files.items():
+                    if s_info['size'] == size and size > 0:
+                        matched_existing = s_info
+                        break
+                        
+                if matched_existing:
+                    renamed.append({
+                        "file": f,
+                        "old_server_path": matched_existing['path']
+                    })
+                else:
+                    to_upload.append(f)
+                    
+        return jsonify({
+            'success': True,
+            'to_upload': to_upload,
+            'renamed': renamed,
+            'already_present': already_present
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/rename', methods=['POST'])
+def rename_file():
+    """In-place rename/move endpoint on server."""
+    try:
+        req_data = request.get_json(silent=True) or {}
+        old_path_str = req_data.get('old_path', '').strip()
+        new_artist = req_data.get('artist', 'Library').strip()
+        new_album = req_data.get('album', 'Singles').strip()
+        new_filename = req_data.get('filename', '').strip()
+        
+        if not old_path_str or not new_filename:
+            return jsonify({'error': 'Missing path/filename'}), 400
+            
+        old_file = MUSIC_DIR / old_path_str
+        if not old_file.exists() or not old_file.is_file():
+            return jsonify({'error': 'Old file does not exist'}), 404
+            
+        def sanitize(name):
+            return "".join(c for c in name if c.isalnum() or c in (' ', '-', '_', '.')).strip()
+            
+        s_artist = sanitize(new_artist) or 'Library'
+        s_album = sanitize(new_album) or 'Singles'
+        
+        name_parts = os.path.splitext(new_filename)
+        clean_name = sanitize(name_parts[0]) + name_parts[1].lower()
+        
+        dest_dir = MUSIC_DIR / s_artist / s_album
+        os.makedirs(dest_dir, exist_ok=True)
+        
+        dest_path = dest_dir / clean_name
+        if old_file != dest_path:
+            shutil.move(str(old_file), str(dest_path))
+            
+        request_background_rescan()
+        return jsonify({'success': True, 'new_path': str(dest_path)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+_rescan_timer = None
+_rescan_lock = threading.Lock()
+
+def request_background_rescan():
+    global _rescan_timer
+    with _rescan_lock:
+        if _rescan_timer is not None:
+            try:
+                _rescan_timer.cancel()
+            except Exception:
+                pass
+        
+        def do_rescan():
+            global cached_tracks
+            try:
+                cached_tracks = scan_library(MUSIC_DIR)
+            except Exception as e:
+                print(f"[WARN] Deferred library rescan failed: {e}", flush=True)
+
+        _rescan_timer = threading.Timer(2.0, do_rescan)
+        _rescan_timer.daemon = True
+        _rescan_timer.start()
 
 if __name__ == '__main__':
     # Start background library scanner thread (runs every 10 seconds)
@@ -373,3 +538,4 @@ if __name__ == '__main__':
     scanner_thread.start()
     
     app.run(host='0.0.0.0', port=8000)
+
